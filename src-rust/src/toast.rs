@@ -285,13 +285,15 @@ fn notify_other_toasts_closing(my_hwnd: HWND) {
     unsafe { let _ = GetWindowRect(my_hwnd, &mut my_rect); }
 
     let others = enum_other_toasts();
+    // Post, not Send: a hung toast in another process must not block this one,
+    // and the receiver then sees this toast already destroyed.
     for t in &others {
         unsafe {
-            let _ = SendMessageW(
-                t.hwnd,
+            let _ = PostMessageW(
+                Some(t.hwnd),
                 WM_TOAST_CHECK_POSITION,
-                Some(WPARAM(my_rect.top as usize)),
-                Some(LPARAM((my_rect.bottom - my_rect.top) as isize)),
+                WPARAM(my_rect.top as usize),
+                LPARAM((my_rect.bottom - my_rect.top) as isize),
             );
         }
     }
@@ -308,15 +310,15 @@ fn notify_all_toasts_pause_timer(pause: bool) {
             Some(LPARAM(0)),
         );
     }
-    // Send to others
+    // Post to others so a hung toast process can't block this one.
     let others = enum_other_toasts();
     for t in &others {
         unsafe {
-            let _ = SendMessageW(
-                t.hwnd,
+            let _ = PostMessageW(
+                Some(t.hwnd),
                 WM_TOAST_PAUSE_TIMER,
-                Some(WPARAM(if pause { 1 } else { 0 })),
-                Some(LPARAM(0)),
+                WPARAM(if pause { 1 } else { 0 }),
+                LPARAM(0),
             );
         }
     }
