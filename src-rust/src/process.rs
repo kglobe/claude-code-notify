@@ -6,6 +6,9 @@
 use windows::Win32::Foundation::*;
 use windows::Win32::System::Diagnostics::ToolHelp::*;
 use windows::Win32::System::Threading::*;
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+};
 
 /// Shell/runtime processes to skip (exact match, case-insensitive).
 const SKIP_LIST: &[&str] = &[
@@ -96,6 +99,91 @@ fn is_known_app(exe_name: &str) -> bool {
     false
 }
 
+/// The window of the app hosting this session, or `fg` when no window can be tied to it.
+/// The hook starts a second or two after Enter, so `fg` may already be another app.
+pub fn host_window(fg: HWND, caller_exe: &str) -> HWND {
+    let wins = titled_windows();
+    let mut fg_pid = 0;
+    unsafe { GetWindowThreadProcessId(fg, Some(&mut fg_pid)) };
+    // Foreground first, so it wins whenever it does belong to the host.
+    let pids: Vec<u32> = std::iter::once(fg_pid).chain(wins.iter().map(|w| w.1)).collect();
+    let stem_of = |pid| file_name_without_ext(&get_process_exe_path(pid));
+    match pick_host(&pids, &ancestors(), &file_name_without_ext(caller_exe), stem_of) {
+        Some(i) if i > 0 => wins[i - 1].0,
+        _ => fg,
+    }
+}
+
+/// Index in `pids` (window owners, topmost first) of the first window owned by the host app:
+/// the nearest ancestor that has one, else an exe named like the caller up to the first '-'
+/// (Herdr's terminals run under a detached herdr-core; the window belongs to herdr-app).
+fn pick_host(pids: &[u32], ancestors: &[u32], caller: &str, stem_of: impl Fn(u32) -> String) -> Option<usize> {
+    if let Some(i) = ancestors.iter().find_map(|a| pids.iter().position(|p| p == a)) {
+        return Some(i);
+    }
+    let app = |stem: &str| stem.split('-').next().unwrap_or_default().to_lowercase();
+    let caller = app(caller);
+    if caller.is_empty() {
+        return None;
+    }
+    pids.iter().position(|&p| app(&stem_of(p)) == caller)
+}
+
+/// Ancestor pids, nearest first. Stops at explorer (it owns the desktop, never the terminal)
+/// and at a parent that started after its child (the real parent died and its pid was reused).
+fn ancestors() -> Vec<u32> {
+    let parents = parent_map();
+    let mut out = Vec::new();
+    let mut pid = unsafe { GetCurrentProcessId() };
+    for _ in 0..10 {
+        let parent = parents.get(&pid).copied().unwrap_or(0);
+        if parent == 0
+            || parent == pid
+            || start_time(parent) > start_time(pid)
+            || file_name_without_ext(&get_process_exe_path(parent)).eq_ignore_ascii_case("explorer")
+        {
+            break;
+        }
+        out.push(parent);
+        pid = parent;
+    }
+    out
+}
+
+/// Process creation time in FILETIME ticks, 0 if the process cannot be opened.
+fn start_time(pid: u32) -> u64 {
+    unsafe {
+        let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return 0;
+        };
+        let mut created = FILETIME::default();
+        let mut unused = FILETIME::default();
+        let unused = &mut unused as *mut FILETIME;
+        let _ = GetProcessTimes(handle, &mut created, unused, unused, unused);
+        let _ = CloseHandle(handle);
+        (created.dwHighDateTime as u64) << 32 | created.dwLowDateTime as u64
+    }
+}
+
+/// Visible top-level windows that have a title, with their owner pid, topmost first.
+fn titled_windows() -> Vec<(HWND, u32)> {
+    unsafe extern "system" fn each(hwnd: HWND, out: LPARAM) -> windows::core::BOOL {
+        // GetWindowTextW reads another process's title without messaging it, so a hung app cannot block the hook.
+        if IsWindowVisible(hwnd).as_bool() && GetWindowTextW(hwnd, &mut [0u16; 2]) > 0 {
+            let mut pid = 0;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            (*(out.0 as *mut Vec<(HWND, u32)>)).push((hwnd, pid));
+        }
+        true.into()
+    }
+
+    let mut out: Vec<(HWND, u32)> = Vec::new();
+    unsafe {
+        let _ = EnumWindows(Some(each), LPARAM(&mut out as *mut Vec<(HWND, u32)> as isize));
+    }
+    out
+}
+
 /// pid -> parent pid for every process, from a single Toolhelp snapshot.
 fn parent_map() -> std::collections::HashMap<u32, u32> {
     let mut map = std::collections::HashMap::new();
@@ -160,7 +248,21 @@ fn file_name_without_ext(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::pick_caller;
+    use super::{pick_caller, pick_host};
+
+    #[test]
+    fn host_window_belongs_to_the_callers_app_not_whatever_is_in_front() {
+        // Window owner pids: 1 msedge, 2 herdr-app, 3 Obsidian, 4 WindowsTerminal.
+        let stem = |p: u32| ["", "msedge", "herdr-app", "Obsidian", "WindowsTerminal"][p as usize].to_string();
+        // Herdr with Edge in front: no ancestor owns a window, so herdr-app matches by name.
+        assert_eq!(pick_host(&[1, 1, 2, 3], &[90, 91], "herdr-core", stem), Some(2));
+        // An ancestor's window beats another app in front; the foreground wins when it is the host's.
+        assert_eq!(pick_host(&[3, 3, 4], &[90, 4], "WindowsTerminal", stem), Some(2));
+        assert_eq!(pick_host(&[4, 3, 4], &[90, 4], "WindowsTerminal", stem), Some(0));
+        // Nothing ties a window to the caller: None, so the foreground is kept.
+        assert_eq!(pick_host(&[1, 1, 3], &[90], "conhost", stem), None);
+        assert_eq!(pick_host(&[1, 1, 3], &[], "", stem), None);
+    }
 
     /// Chain: pid i's parent is i+1; exe of pid i is names[i].
     fn walk(names: &[&str]) -> String {

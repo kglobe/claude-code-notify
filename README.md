@@ -68,7 +68,7 @@ The plugin runs one exe, `notifications/ToastWindow.exe`, from five hooks in `ho
 
 | Hook | Flag | What it does |
 |------|------|--------------|
-| `UserPromptSubmit` | `--save` | Records the foreground window, the selected Windows Terminal tab, the calling app's exe path, and your prompt |
+| `UserPromptSubmit` | `--save` | Records the window of the app running Claude Code (the foreground window if it can't tell), the selected Windows Terminal tab, the calling app's exe path, and your prompt |
 | `Notification` | `--input` | Shows a "needs input" card (permission, idle, MCP elicitation) |
 | `PreToolUse` on `AskUserQuestion\|ExitPlanMode` | `--input` | Shows a "question" or "plan ready" card |
 | `Stop` | `--notify` | Shows the "done" card |

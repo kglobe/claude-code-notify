@@ -68,7 +68,7 @@ plugin 只有一支 exe，`notifications/ToastWindow.exe`，由 `hooks/hooks.jso
 
 | Hook | 參數 | 做什麼 |
 |------|------|--------|
-| `UserPromptSubmit` | `--save` | 記下前景視窗、Windows Terminal 目前的分頁、呼叫端 app 的 exe 路徑和你的 prompt |
+| `UserPromptSubmit` | `--save` | 記下跑 Claude Code 的那個 app 的視窗（認不出來就記前景視窗）、Windows Terminal 目前的分頁、呼叫端 app 的 exe 路徑和你的 prompt |
 | `Notification` | `--input` | 顯示「需要輸入」卡片（授權、閒置、MCP elicitation） |
 | `PreToolUse`，matcher `AskUserQuestion\|ExitPlanMode` | `--input` | 顯示「有問題」或「計畫待確認」卡片 |
 | `Stop` | `--notify` | 顯示「已完成」卡片 |

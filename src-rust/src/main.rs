@@ -82,6 +82,10 @@ fn capture_target(immediate_hwnd: HWND) -> (HWND, String, String) {
         fallback
     };
 
+    let caller_path = process::find_caller_exe_path();
+    let hwnd = process::host_window(hwnd, &caller_path);
+    debug_log!("Host window: {:?}", hwnd);
+
     // Detect Windows Terminal and get RuntimeId
     let mut runtime_id = String::new();
     let class = util::get_class_name(hwnd);
@@ -93,7 +97,7 @@ fn capture_target(immediate_hwnd: HWND) -> (HWND, String, String) {
         debug_log!("RuntimeId: {}", runtime_id);
     }
 
-    (hwnd, runtime_id, process::find_caller_exe_path())
+    (hwnd, runtime_id, caller_path)
 }
 
 fn run_notify_mode(debug: bool) -> i32 {
