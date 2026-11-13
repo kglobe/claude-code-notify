@@ -65,7 +65,7 @@ pub fn extract_icon(exe_path: &str) -> HICON {
     let mut small = HICON::default();
 
     unsafe {
-        let count = ExtractIconExW(
+        ExtractIconExW(
             PCWSTR(path_wide.as_ptr()),
             0,
             Some(&mut large),
@@ -73,10 +73,8 @@ pub fn extract_icon(exe_path: &str) -> HICON {
             1,
         );
 
-        if count > 0 {
-            if !small.is_invalid() {
-                let _ = DestroyIcon(small);
-            }
+        if !small.is_invalid() {
+            let _ = DestroyIcon(small);
         }
     }
 
@@ -101,12 +99,8 @@ pub fn play_sound(wav_path: &Option<String>) {
         }
     }
 
-    // Fallback: system beep
-    #[link(name = "user32")]
-    extern "system" {
-        fn MessageBeep(utype: u32) -> i32;
-    }
+    // Fallback: the system "Asterisk" sound (what MessageBeep(MB_ICONASTERISK) plays).
     unsafe {
-        MessageBeep(0x40); // MB_ICONASTERISK
+        let _ = PlaySoundW(windows::core::w!("SystemAsterisk"), None, SND_ALIAS | SND_ASYNC);
     }
 }

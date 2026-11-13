@@ -87,7 +87,9 @@ struct ToastState {
     time: String,
     input_mode: bool,
     icon: HICON,
-    default_icon_path: String,
+    /// Default logo loaded once at logo size; invalid if none.
+    logo: HICON,
+    light: bool,
     // Rendering (per-pixel alpha surface for UpdateLayeredWindow)
     scale: f32,
     width: i32,
@@ -215,10 +217,7 @@ fn enum_other_toasts() -> Vec<ToastInfo> {
         if hwnd == my_hwnd {
             return TRUE;
         }
-        let mut class_buf = [0u16; 256];
-        let len = GetClassNameW(hwnd, &mut class_buf);
-        let class = String::from_utf16_lossy(&class_buf[..len as usize]);
-        if class == TOAST_CLASS_NAME && IsWindowVisible(hwnd).as_bool() {
+        if crate::util::get_class_name(hwnd) == TOAST_CLASS_NAME && IsWindowVisible(hwnd).as_bool() {
             let mut rect = RECT::default();
             let _ = GetWindowRect(hwnd, &mut rect);
             toasts.push(ToastInfo { hwnd, rect });
@@ -240,7 +239,7 @@ fn calculate_position(work_area: &RECT, taskbar_edge: u32, width: i32, height: i
     let other_toasts = enum_other_toasts();
 
     // X position (margin keeps the card off the screen edge, like system toasts)
-    let x = if taskbar_edge == ABE_LEFT as u32 {
+    let x = if taskbar_edge == ABE_LEFT {
         work_area.left + margin
     } else {
         work_area.right - width - margin
@@ -249,13 +248,13 @@ fn calculate_position(work_area: &RECT, taskbar_edge: u32, width: i32, height: i
     // Y position
     let y = if other_toasts.is_empty() {
         // First toast
-        if taskbar_edge == ABE_TOP as u32 {
+        if taskbar_edge == ABE_TOP {
             work_area.top + margin
         } else {
             work_area.bottom - height - margin
         }
     } else {
-        if taskbar_edge == ABE_TOP as u32 {
+        if taskbar_edge == ABE_TOP {
             // Stack below: find lowest bottom
             let lowest_bottom = other_toasts.iter().map(|t| t.rect.bottom).max().unwrap_or(work_area.top);
             lowest_bottom + gap
@@ -269,35 +268,46 @@ fn calculate_position(work_area: &RECT, taskbar_edge: u32, width: i32, height: i
     (x, y)
 }
 
-fn is_bottom_toast_check(hwnd: HWND, _taskbar_edge: u32) -> bool {
-    let other_toasts = enum_other_toasts();
-    if other_toasts.is_empty() {
-        return true;
-    }
+fn is_bottom_toast_check(hwnd: HWND, taskbar_edge: u32) -> bool {
+    let mut rect = RECT::default();
+    unsafe { let _ = GetWindowRect(hwnd, &mut rect); }
+    let other_tops = enum_other_toasts().into_iter().map(|t| t.rect.top);
+    is_bottom(rect.top, other_tops, taskbar_edge == ABE_TOP)
+}
 
-    // Bottom toast = the one with the lowest HWND value (created earliest, closest to taskbar)
-    for t in &other_toasts {
-        if (t.hwnd.0 as usize) < (hwnd.0 as usize) {
-            return false;
-        }
-    }
-    true
+/// The bottom toast is the one nearest the taskbar. A tie counts as bottom for both,
+/// so two toasts placed at the same y still fade instead of waiting on each other.
+fn is_bottom(my_top: i32, other_tops: impl IntoIterator<Item = i32>, taskbar_top: bool) -> bool {
+    other_tops
+        .into_iter()
+        .all(|t| if taskbar_top { t >= my_top } else { t <= my_top })
 }
 
 fn notify_other_toasts_closing(my_hwnd: HWND) {
     let mut my_rect = RECT::default();
     unsafe { let _ = GetWindowRect(my_hwnd, &mut my_rect); }
-
     let others = enum_other_toasts();
+    // Hide before posting: receivers run in other processes and may handle the
+    // message at once, so they must already see this toast gone.
+    unsafe { let _ = ShowWindow(my_hwnd, SW_HIDE); }
+    // Post, not Send: a hung toast in another process must not block this one.
     for t in &others {
         unsafe {
-            let _ = SendMessageW(
-                t.hwnd,
+            let _ = PostMessageW(
+                Some(t.hwnd),
                 WM_TOAST_CHECK_POSITION,
-                Some(WPARAM(my_rect.top as usize)),
-                Some(LPARAM((my_rect.bottom - my_rect.top) as isize)),
+                WPARAM(my_rect.top as usize),
+                LPARAM((my_rect.bottom - my_rect.top) as isize),
             );
         }
+    }
+}
+
+fn cursor_over_toast() -> bool {
+    let mut pt = POINT::default();
+    unsafe {
+        GetCursorPos(&mut pt).is_ok()
+            && crate::util::get_class_name(WindowFromPoint(pt)) == TOAST_CLASS_NAME
     }
 }
 
@@ -312,15 +322,15 @@ fn notify_all_toasts_pause_timer(pause: bool) {
             Some(LPARAM(0)),
         );
     }
-    // Send to others
+    // Post to others so a hung toast process can't block this one.
     let others = enum_other_toasts();
     for t in &others {
         unsafe {
-            let _ = SendMessageW(
-                t.hwnd,
+            let _ = PostMessageW(
+                Some(t.hwnd),
                 WM_TOAST_PAUSE_TIMER,
-                Some(WPARAM(if pause { 1 } else { 0 })),
-                Some(LPARAM(0)),
+                WPARAM(if pause { 1 } else { 0 }),
+                LPARAM(0),
             );
         }
     }
@@ -410,11 +420,14 @@ unsafe extern "system" fn wnd_proc(
                 TIMER_CHECK_BOTTOM => {
                     let taskbar_edge = with_toast(|s| s.taskbar_edge);
                     if is_bottom_toast_check(hwnd, taskbar_edge) {
-                        with_toast_mut(|state| {
+                        let inside = with_toast_mut(|state| {
                             state.is_bottom_toast = true;
+                            state.mouse_inside
                         });
                         let _ = KillTimer(Some(hwnd), TIMER_CHECK_BOTTOM);
-                        SetTimer(Some(hwnd), TIMER_START_FADE, DISPLAY_MS, None);
+                        if !inside {
+                            SetTimer(Some(hwnd), TIMER_START_FADE, DISPLAY_MS, None);
+                        }
                     }
                 }
                 _ => {}
@@ -437,7 +450,6 @@ unsafe extern "system" fn wnd_proc(
                 let _ = KillTimer(Some(hwnd), TIMER_START_FADE);
                 let _ = KillTimer(Some(hwnd), TIMER_FADE);
                 notify_other_toasts_closing(hwnd);
-                let _ = ShowWindow(hwnd, SW_HIDE);
 
                 let (target, wt, rid) = with_toast_mut(|state| {
                     state.clicked = true;
@@ -511,7 +523,7 @@ unsafe extern "system" fn wnd_proc(
             let closed_height = lparam.0 as i32;
             with_toast_mut(|state| {
                 let shift = closed_height + stack_gap(state.scale);
-                if state.taskbar_edge == ABE_TOP as u32 {
+                if state.taskbar_edge == ABE_TOP {
                     // Top taskbar: if we're below the closed toast, move up
                     if my_rect.top > closed_toast_y {
                         state.target_y = my_rect.top - shift;
@@ -543,7 +555,9 @@ unsafe extern "system" fn wnd_proc(
         }
 
         x if x == WM_TOAST_PAUSE_TIMER => {
-            let pause = wparam.0 == 1;
+            // Posted pause/resume from different toasts can arrive out of order,
+            // so a resume only counts if the cursor really left every toast.
+            let pause = wparam.0 == 1 || cursor_over_toast();
 
             with_toast_mut(|state| {
                 if pause {
@@ -637,6 +651,7 @@ unsafe fn measure_layout(dc: HDC, scale: f32, width: i32, message: &str) -> Layo
     Layout { header_y, title_y, status_y, message_y, message_h, path_y, height }
 }
 
+#[allow(clippy::too_many_arguments)] // call sites read better with font args inline than via a struct
 unsafe fn draw_text(dc: HDC, text: &str, rect: RECT, size: i32, weight: i32, family: &str, color: u32, flags: DRAW_TEXT_FORMAT) {
     if text.is_empty() {
         return;
@@ -654,13 +669,12 @@ unsafe fn draw_text(dc: HDC, text: &str, rect: RECT, size: i32, weight: i32, fam
 
 /// Paint the whole card into the DIB, then push it to the layered window.
 unsafe fn render(hwnd: HWND) {
-    let (title, status, message, cwd, time, input_mode, icon, default_icon_path,
+    let (title, status, message, cwd, time, input_mode, icon, logo_icon, light,
          scale, w, h, dc, bits, hover, hover_close, alpha) = with_toast(|t| (
         t.title.clone(), t.status.clone(), t.message.clone(), t.cwd.clone(), t.time.clone(),
-        t.input_mode, t.icon, t.default_icon_path.clone(),
+        t.input_mode, t.icon, t.logo, t.light,
         t.scale, t.width, t.height, t.mem_dc, t.bits, t.mouse_inside, t.hover_close, t.alpha,
     ));
-    let light = system_uses_light_theme();
     let theme = if light { &LIGHT } else { &DARK };
     let s = |v: i32| (v as f32 * scale).round() as i32;
     let sf = |v: f32| v * scale;
@@ -704,17 +718,8 @@ unsafe fn render(hwnd: HWND) {
     let logo_x = s(PAD);
     let logo_y = layout.header_y + s(2);
     let logo = s(LOGO_SIZE);
-    let mut drawn = false;
-    if !default_icon_path.is_empty() {
-        let path_wide = crate::util::encode_wide(&default_icon_path);
-        if let Ok(handle) = LoadImageW(None, PCWSTR(path_wide.as_ptr()), IMAGE_ICON, logo, logo, LR_LOADFROMFILE) {
-            let h_icon = HICON(handle.0);
-            if !h_icon.is_invalid() {
-                drawn = DrawIconEx(dc, logo_x, logo_y, h_icon, logo, logo, 0, None, DI_NORMAL).is_ok();
-                let _ = DestroyIcon(h_icon);
-            }
-        }
-    }
+    let drawn = !logo_icon.is_invalid()
+        && DrawIconEx(dc, logo_x, logo_y, logo_icon, logo, logo, 0, None, DI_NORMAL).is_ok();
     if !drawn && !icon.is_invalid() {
         let _ = DrawIconEx(dc, logo_x, logo_y, icon, logo, logo, 0, None, DI_NORMAL);
     }
@@ -858,6 +863,10 @@ pub fn show_toast(params: ToastParams) {
         return;
     }
 
+    // Loaded once here: render() runs on every hover change.
+    let light = system_uses_light_theme();
+    let logo = load_logo(&params.default_icon_path, px(LOGO_SIZE, scale));
+
     TOAST.with(|cell| {
         *cell.borrow_mut() = Some(ToastState {
             hwnd: HWND::default(),
@@ -868,7 +877,8 @@ pub fn show_toast(params: ToastParams) {
             time,
             input_mode: params.input_mode,
             icon: params.icon,
-            default_icon_path: params.default_icon_path,
+            logo,
+            light,
             scale,
             width,
             height,
@@ -945,6 +955,21 @@ pub fn show_toast(params: ToastParams) {
             DispatchMessageW(&msg);
         }
     }
+    if !logo.is_invalid() {
+        unsafe { let _ = DestroyIcon(logo); }
+    }
+}
+
+fn load_logo(path: &str, size: i32) -> HICON {
+    if path.is_empty() {
+        return HICON::default();
+    }
+    let path_wide = crate::util::encode_wide(path);
+    unsafe {
+        LoadImageW(None, PCWSTR(path_wide.as_ptr()), IMAGE_ICON, size, size, LR_LOADFROMFILE)
+            .map(|h| HICON(h.0))
+            .unwrap_or_default()
+    }
 }
 
 fn detect_taskbar_edge() -> u32 {
@@ -957,7 +982,7 @@ fn detect_taskbar_edge() -> u32 {
     if result != 0 {
         abd.uEdge
     } else {
-        ABE_BOTTOM as u32
+        ABE_BOTTOM
     }
 }
 
@@ -974,5 +999,24 @@ fn get_cursor_monitor_work_area() -> (RECT, HMONITOR) {
         let _ = GetMonitorInfoW(monitor, &mut mi);
 
         (mi.rcWork, monitor)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_bottom;
+
+    #[test]
+    fn bottom_toast_is_the_one_nearest_the_taskbar() {
+        // Taskbar at bottom: larger top = closer to taskbar.
+        assert!(is_bottom(900, [700, 500], false));
+        assert!(!is_bottom(700, [900, 500], false));
+        // Taskbar at top: smaller top = closer to taskbar.
+        assert!(is_bottom(10, [200, 400], true));
+        assert!(!is_bottom(200, [10, 400], true));
+        assert!(is_bottom(500, [], false));
+        // Two toasts placed at the same y (concurrent spawn) must not both wait forever.
+        assert!(is_bottom(500, [500], false));
+        assert!(is_bottom(10, [10], true));
     }
 }

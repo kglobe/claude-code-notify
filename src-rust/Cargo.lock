@@ -88,7 +88,7 @@ dependencies = [
 
 [[package]]
 name = "toast-window"
-version = "1.0.0"
+version = "1.2.0"
 dependencies = [
  "serde",
  "serde_json",

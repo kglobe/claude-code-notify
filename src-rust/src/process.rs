@@ -43,15 +43,25 @@ const KNOWN_APPS: &[&str] = &[
 
 /// Find the caller application's exe path by walking up the process tree.
 pub fn find_caller_exe_path() -> String {
-    let mut pid = unsafe { GetCurrentProcessId() };
+    let parents = parent_map();
+    pick_caller(
+        unsafe { GetCurrentProcessId() },
+        |pid| parents.get(&pid).copied().unwrap_or(0),
+        get_process_exe_path,
+    )
+}
+
+/// Walk up at most 10 ancestors; return the first known app or non-shell exe.
+fn pick_caller(start: u32, parent_of: impl Fn(u32) -> u32, exe_of: impl Fn(u32) -> String) -> String {
+    let mut pid = start;
 
     for _ in 0..10 {
-        let parent_pid = get_parent_pid(pid);
+        let parent_pid = parent_of(pid);
         if parent_pid == 0 || parent_pid == pid {
             break;
         }
 
-        let exe_path = get_process_exe_path(parent_pid);
+        let exe_path = exe_of(parent_pid);
         if exe_path.is_empty() {
             pid = parent_pid;
             continue;
@@ -86,11 +96,12 @@ fn is_known_app(exe_name: &str) -> bool {
     false
 }
 
-fn get_parent_pid(pid: u32) -> u32 {
+/// pid -> parent pid for every process, from a single Toolhelp snapshot.
+fn parent_map() -> std::collections::HashMap<u32, u32> {
+    let mut map = std::collections::HashMap::new();
     unsafe {
-        let snapshot = match CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) {
-            Ok(h) => h,
-            Err(_) => return 0,
+        let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return map;
         };
 
         let mut entry = PROCESSENTRY32W {
@@ -100,10 +111,7 @@ fn get_parent_pid(pid: u32) -> u32 {
 
         if Process32FirstW(snapshot, &mut entry).is_ok() {
             loop {
-                if entry.th32ProcessID == pid {
-                    let _ = CloseHandle(snapshot);
-                    return entry.th32ParentProcessID;
-                }
+                map.insert(entry.th32ProcessID, entry.th32ParentProcessID);
                 if Process32NextW(snapshot, &mut entry).is_err() {
                     break;
                 }
@@ -111,8 +119,8 @@ fn get_parent_pid(pid: u32) -> u32 {
         }
 
         let _ = CloseHandle(snapshot);
-        0
     }
+    map
 }
 
 fn get_process_exe_path(pid: u32) -> String {
@@ -141,11 +149,36 @@ fn get_process_exe_path(pid: u32) -> String {
 
 fn file_name_without_ext(path: &str) -> String {
     let name = path
-        .rsplit(|c| c == '\\' || c == '/')
+        .rsplit(['\\', '/'])
         .next()
         .unwrap_or(path);
     match name.rfind('.') {
         Some(pos) => name[..pos].to_string(),
         None => name.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pick_caller;
+
+    /// Chain: pid i's parent is i+1; exe of pid i is names[i].
+    fn walk(names: &[&str]) -> String {
+        pick_caller(0, |p| p + 1, |p| names.get(p as usize).map(|s| s.to_string()).unwrap_or_default())
+    }
+
+    #[test]
+    fn skips_shells_and_returns_known_or_unknown_app() {
+        assert_eq!(walk(&["", r"C:\bash.exe", r"C:\node.EXE", r"C:\Code-Insiders.exe"]), r"C:\Code-Insiders.exe");
+        assert_eq!(walk(&["", r"C:\cmd.exe", "", r"C:\foo.exe"]), r"C:\foo.exe");
+        assert_eq!(walk(&["", r"C:\cmd.exe", r"C:\cmd.exe"]), "");
+    }
+
+    #[test]
+    fn stops_at_root_self_parent_and_depth_limit() {
+        assert_eq!(pick_caller(5, |_| 0, |_| "x.exe".into()), "");
+        assert_eq!(pick_caller(5, |p| p, |_| "x.exe".into()), "");
+        let deep: Vec<&str> = std::iter::repeat_n(r"C:\cmd.exe", 11).chain([r"C:\app.exe"]).collect();
+        assert_eq!(walk(&deep), "");
     }
 }

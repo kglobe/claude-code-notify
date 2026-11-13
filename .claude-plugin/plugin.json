@@ -1,11 +1,11 @@
 {
   "name": "claude-code-notify",
   "description": "Native Windows toast notifications for Claude Code with window activation",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": {
-    "name": "chuilishi"
+    "name": "kglobe"
   },
-  "homepage": "https://github.com/chuilishi/claude-code-notify",
-  "repository": "https://github.com/chuilishi/claude-code-notify",
+  "homepage": "https://github.com/kglobe/claude-code-notify",
+  "repository": "https://github.com/kglobe/claude-code-notify",
   "license": "MIT"
 }

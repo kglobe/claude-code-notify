@@ -1,144 +1,112 @@
-<div align="center">
+# Claude Code Notify
 
-# 🔔 Claude Code Notify
+Windows toast notifications for Claude Code. When Claude finishes a reply or needs your input, a small card pops up above the taskbar. Click it to jump back to the window and Windows Terminal tab you were typing in.
 
-**Native Windows Toast notifications for Claude Code**
-
-**[📖 中文文档](README_CN.md)**
+[中文說明](README_CN.md)
 
 ![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D6?logo=windows&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-<img src="assets/demo.gif" width="450">
+<img src="assets/screenshot.png" width="420" alt="A toast showing the project folder name, the status 已完成, the prompt, and the working directory">
 
-*Click the notification to jump back to your Claude Code window*
+This is a fork of [chuilishi/claude-code-notify](https://github.com/chuilishi/claude-code-notify). Version 1.2.0 redesigns the card, fixes argument quoting and toast stacking bugs, and trims the Rust code.
 
-</div>
-
----
-
-## ✨ Features
-
-- 🔔 **Native Windows Toast** — Clean, system-integrated notifications
-- 🎯 **One-Click Return** — Click to jump back to your terminal/editor
-- 🖥️ **Wide Compatibility** — VSCode, Cursor, JetBrains, Windows Terminal, and more
-- 🔄 **Tab-Aware** — Supports Windows Terminal tab switching
-- 🎨 **Auto Icon** — Extracts the calling application's icon
-
----
-
-## 🚀 Installation
+## Install
 
 ```bash
-claude plugin marketplace add chuilishi/claude-code-notify
+claude plugin marketplace add kglobe/claude-code-notify
 claude plugin install claude-code-notify@claude-code-notify
 ```
 
-That's it. Restart Claude Code and notifications will work automatically.
+Restart Claude Code. The plugin registers its hooks on its own; you don't edit `settings.json`.
 
-### WSL Permission Fix
-
-If you install the plugin inside WSL and hooks fail with `Permission denied`, make the bundled Windows executable runnable:
-
-```bash
-chmod +x ~/.claude/plugins/cache/claude-code-notify/claude-code-notify/*/notifications/ToastWindow.exe
-```
-
-This is the workaround from [issue #2](https://github.com/chuilishi/claude-code-notify/issues/2). If your cache path uses a fixed version directory, `*` can be replaced with that version, for example `1.1.0`.
-
----
-
-## 📖 Usage
-
-After Claude finishes responding, a notification appears:
-
-| Action | Result |
-|--------|--------|
-| **Left-click** | Jump back to Claude Code window |
-| **Right-click** / **X** | Dismiss notification |
-
----
-
-## 🗑️ Uninstall
+To remove it:
 
 ```bash
 claude plugin uninstall claude-code-notify
 ```
 
----
+### WSL: `Permission denied`
 
-<details>
-<summary><b>⚙️ How It Works</b></summary>
+If you installed the plugin inside WSL and the hooks fail with `Permission denied`, mark the bundled exe as executable:
 
-<br>
+```bash
+chmod +x ~/.claude/plugins/cache/claude-code-notify/claude-code-notify/*/notifications/ToastWindow.exe
+```
 
-### Plugin System
+Workaround from upstream [issue #2](https://github.com/chuilishi/claude-code-notify/issues/2). Replace `*` with the version directory (for example `1.2.0`) if your shell doesn't expand it.
 
-This project uses Claude Code's **plugin system** to register hooks automatically — no manual `settings.json` editing required. Hooks are defined in `hooks/hooks.json` and discovered by Claude Code at startup.
+## What the card shows
 
-### Hook Flow
+From top to bottom:
 
-| Hook | Trigger | Action |
-|------|---------|--------|
-| `UserPromptSubmit` | You send a message | Saves current window handle, active tab, and caller app icon |
-| `Stop` | Claude finishes | Shows "Task completed" notification (orange border) |
-| `Notification` | Claude needs input (permission / idle / MCP elicitation) | Shows context-aware notification (yellow border) with title like "Permission Required", "Claude is Waiting", "MCP Asks" |
-| `PreToolUse` (`AskUserQuestion` \| `ExitPlanMode`) | Claude asks a question or finishes a plan | Shows "Claude is Asking" / "Plan Ready for Approval" notification |
-| `SessionEnd` | Session ends | Cleans up the session's state file |
-| *Click notification* | — | Activates saved window and switches to the correct tab |
+| Row | Content |
+|-----|---------|
+| Header | Claude logo, "Claude Code", the time, and a close button |
+| Title | Folder name of the session's working directory, with a badge: a check mark when done, `!` when Claude needs you |
+| Status | One of 已完成 (done), 需要授權 (permission needed), 等你回覆 (waiting for you), MCP 詢問 (MCP asks), 有問題要問你 (Claude has a question), 計畫待確認 (plan ready for approval), 需要你輸入 (input needed) |
+| Message | Your last prompt, or the question or permission detail |
+| Path | Full working directory |
 
-### Session Isolation
+The card follows the system light or dark theme and scales with DPI. The status text is in Traditional Chinese; there is no setting to change it.
 
-Each Claude Code session has a unique `session_id` (received via stdin JSON). State is stored per-session in `%TEMP%\claude-notify-{session_id}.txt`, so multiple Claude instances don't interfere with each other.
+## Using it
 
-### Windows Terminal Tab Switching
+| Action | Result |
+|--------|--------|
+| Left-click | Bring the original window to the front and switch to the original Windows Terminal tab |
+| Right-click or X | Close the card |
+| Hover | Pause the countdown on every card |
 
-When running inside Windows Terminal, simply bringing the window to the foreground isn't enough — the user may have switched to a different tab. This project uses the **Windows UI Automation API** to:
+Each card stays for 6 seconds, then fades out over 0.6 seconds. When several cards stack, only the one nearest the taskbar counts down; the others wait their turn.
 
-1. Detect if the foreground window is Windows Terminal (by checking for the `CASCADIA_HOSTING_WINDOW_CLASS` window class)
-2. Enumerate all tab items and record the **RuntimeId** of the currently selected tab at prompt time
-3. On notification click, find the tab with the matching RuntimeId and call `IUIAutomationSelectionItemPattern::Select()` to switch back to it
+A sound plays with each card: the first `.wav` in `notifications/assets/sound/`, or the Windows "Asterisk" sound if there is none.
 
-### Caller App Icon Extraction
+## How it works
 
-The notification displays the icon of the app you're using (VSCode, Cursor, JetBrains IDEs, etc.), not a generic icon. This is done by **walking up the process tree** at prompt time:
+The plugin runs one exe, `notifications/ToastWindow.exe`, from five hooks in `hooks/hooks.json`:
 
-- Skips known shell/runtime processes (cmd, powershell, bash, node, python, uv, etc.)
-- Recognizes known apps: **VSCode**, **Cursor**, **Windsurf**, **Codium**, **JetBrains IDEs** (IntelliJ, WebStorm, PyCharm, Rider, GoLand, CLion), **Windows Terminal**, **ConEmu**, **Tabby**, **WezTerm**
-- Extracts the app's icon via `ExtractIconExW()` and displays it in the toast
+| Hook | Flag | What it does |
+|------|------|--------------|
+| `UserPromptSubmit` | `--save` | Records the foreground window, the selected Windows Terminal tab, the calling app's exe path, and your prompt |
+| `Notification` | `--input` | Shows a "needs input" card (permission, idle, MCP elicitation) |
+| `PreToolUse` on `AskUserQuestion\|ExitPlanMode` | `--input` | Shows a "question" or "plan ready" card |
+| `Stop` | `--notify` | Shows the "done" card |
+| `SessionEnd` | `--cleanup` | Deletes the session's state file |
 
-### Window Activation
+State lives in `%TEMP%\claude-notify-{session_id}.txt`, one file per session, so several Claude Code windows don't overwrite each other.
 
-Windows restricts `SetForegroundWindow()` — a background process can't just steal focus. This project uses several techniques to work around it:
+The hook process returns right away. It starts a second, detached copy of the exe with `--notify-show`, which draws the card and runs until the card closes.
 
-- `AllowSetForegroundWindow(ASFW_ANY)` to permit foreground changes
-- ALT key simulation trick to satisfy Windows' focus-stealing prevention
-- Thread input attachment (`AttachThreadInput`) between current, foreground, and target threads
-- Combined `SetWindowPos` + `BringWindowToTop` + `SwitchToThisWindow` + `SetForegroundWindow` for reliable activation
+Window and tab matching:
 
-### Toast Stacking
+- The window is found by walking up the process tree from the hook to the first app that isn't a shell or runtime. Both lists, the skipped processes and the known apps (VS Code, Cursor, Windsurf, JetBrains IDEs, Windows Terminal, and others), are in `src-rust/src/process.rs`.
+- Windows Terminal tabs are matched by UI Automation RuntimeId, saved at prompt time and selected again on click.
+- Bringing a window forward from a background process needs several Win32 calls, because Windows blocks focus stealing. See `src-rust/src/activate.rs`.
 
-Multiple notifications stack vertically (Telegram-style) without overlapping:
+Cards never take focus (`WS_EX_NOACTIVATE`), stay on top, and find each other by window class `ClaudeCodeToast` to stack without overlapping.
 
-- All toasts share the class name `ClaudeCodeToast` and discover each other via `EnumWindows`
-- New toasts appear above existing ones; when one closes, others slide down smoothly
-- Only the bottom toast starts the auto-dismiss timer; upper toasts wait
-- Mouse hover over **any** toast pauses the timer for **all** toasts
+## Building from source
 
-### Non-Intrusive Display
+Needs a Rust toolchain on Windows.
 
-Toasts are created with `WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_LAYERED`, so they:
+```bash
+cd src-rust
+cargo test
+cargo build --release
+cp target/release/toast-window.exe ../notifications/ToastWindow.exe
+```
 
-- Never steal focus from your current window
-- Stay on top of all windows
-- Support smooth fade-out animation via alpha blending
+Add `--debug` to any hook command to write a log to `debug.log` next to the exe.
 
-</details>
+To try the release build without Claude Code, run the verification script with PowerShell 7 (it uses `ArgumentList`, which Windows PowerShell 5 doesn't have). `-Mode` is `notify`, `input`, `stack`, or `doctor`; screenshots go to `verify-evidence/`.
 
----
+```powershell
+pwsh .claude/skills/verify-toast/verify.ps1 -Mode stack
+```
 
-<div align="center">
+Some antivirus products block a freshly built exe until you allow it.
 
-MIT License
+## License
 
-</div>
+MIT
