@@ -17,7 +17,9 @@ pub fn init(debug: bool) {
     });
     let _ = LOG_PATH.set(log_path);
     // Append, not truncate: the hook process and its --notify-show child share this file.
-    log(&format!("=== ToastWindow pid {} ===", std::process::id()));
+    if debug {
+        log(&format!("=== ToastWindow pid {} ===", std::process::id()));
+    }
 }
 
 /// Log a message. Only outputs if --debug was specified.

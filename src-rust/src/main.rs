@@ -96,18 +96,7 @@ fn run_notify_mode(debug: bool) -> i32 {
 
     debug_log!("Notify mode, session: {}", session_id);
 
-    let mut cmd = format!(
-        "{} --notify-show --session {}",
-        spawn::quote_arg(&exe_path()),
-        spawn::quote_arg(&session_id)
-    );
-    push_cwd_arg(&mut cmd, &input);
-    if debug {
-        cmd.push_str(" --debug");
-    }
-
-    debug_log!("Spawning: {}", cmd);
-    spawn::spawn_detached(&cmd);
+    spawn_display(&session_id, "", &input, debug);
     0
 }
 
@@ -171,20 +160,12 @@ fn run_input_mode(debug: bool) -> i32 {
         session_id, tool_name, notification_type, title, message
     );
 
-    let mut cmd = format!(
-        "{} --notify-show --input-mode --session {} --message {} --title {}",
-        spawn::quote_arg(&exe_path()),
-        spawn::quote_arg(&session_id),
+    let extra = format!(
+        " --input-mode --message {} --title {}",
         spawn::quote_arg(&message),
         spawn::quote_arg(&title)
     );
-    push_cwd_arg(&mut cmd, &input);
-    if debug {
-        cmd.push_str(" --debug");
-    }
-
-    debug_log!("Spawning: {}", cmd);
-    spawn::spawn_detached(&cmd);
+    spawn_display(&session_id, &extra, &input, debug);
     0
 }
 
@@ -269,12 +250,23 @@ fn run_notify_show_mode(args: &cli::Args) -> i32 {
     0
 }
 
-/// Forward the hook's `cwd` to the display process.
-fn push_cwd_arg(cmd: &mut String, input: &serde_json::Value) {
+/// Start the detached `--notify-show` process; `extra` is already-quoted args.
+fn spawn_display(session_id: &str, extra: &str, input: &serde_json::Value, debug: bool) {
+    let mut cmd = format!(
+        "{} --notify-show --session {}{}",
+        spawn::quote_arg(&exe_path()),
+        spawn::quote_arg(session_id),
+        extra
+    );
     let cwd = json::extract_string(input, "cwd");
     if !cwd.is_empty() {
         cmd.push_str(&format!(" --cwd {}", spawn::quote_arg(&cwd)));
     }
+    if debug {
+        cmd.push_str(" --debug");
+    }
+    debug_log!("Spawning: {}", cmd);
+    spawn::spawn_detached(&cmd);
 }
 
 /// Last path component, e.g. "D:\\0-icsc_project" -> "0-icsc_project".

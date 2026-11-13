@@ -271,15 +271,15 @@ fn calculate_position(work_area: &RECT, taskbar_edge: u32, width: i32, height: i
 fn is_bottom_toast_check(hwnd: HWND, taskbar_edge: u32) -> bool {
     let mut rect = RECT::default();
     unsafe { let _ = GetWindowRect(hwnd, &mut rect); }
-    let other_tops: Vec<i32> = enum_other_toasts().iter().map(|t| t.rect.top).collect();
-    is_bottom(rect.top, &other_tops, taskbar_edge == ABE_TOP)
+    let other_tops = enum_other_toasts().into_iter().map(|t| t.rect.top);
+    is_bottom(rect.top, other_tops, taskbar_edge == ABE_TOP)
 }
 
 /// The bottom toast is the one nearest the taskbar.
-fn is_bottom(my_top: i32, other_tops: &[i32], taskbar_top: bool) -> bool {
+fn is_bottom(my_top: i32, other_tops: impl IntoIterator<Item = i32>, taskbar_top: bool) -> bool {
     other_tops
-        .iter()
-        .all(|&t| if taskbar_top { t > my_top } else { t < my_top })
+        .into_iter()
+        .all(|t| if taskbar_top { t > my_top } else { t < my_top })
 }
 
 fn notify_other_toasts_closing(my_hwnd: HWND) {
@@ -995,11 +995,11 @@ mod tests {
     #[test]
     fn bottom_toast_is_the_one_nearest_the_taskbar() {
         // Taskbar at bottom: larger top = closer to taskbar.
-        assert!(is_bottom(900, &[700, 500], false));
-        assert!(!is_bottom(700, &[900, 500], false));
+        assert!(is_bottom(900, [700, 500], false));
+        assert!(!is_bottom(700, [900, 500], false));
         // Taskbar at top: smaller top = closer to taskbar.
-        assert!(is_bottom(10, &[200, 400], true));
-        assert!(!is_bottom(200, &[10, 400], true));
-        assert!(is_bottom(500, &[], false));
+        assert!(is_bottom(10, [200, 400], true));
+        assert!(!is_bottom(200, [10, 400], true));
+        assert!(is_bottom(500, [], false));
     }
 }

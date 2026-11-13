@@ -53,21 +53,15 @@ pub fn quote_arg(s: &str) -> String {
     let mut out = String::from("\"");
     let mut backslashes = 0;
     for c in s.chars() {
-        match c {
-            '\\' => backslashes += 1,
-            '"' => {
-                // Backslashes before a quote are doubled, then the quote itself is escaped.
-                out.extend(std::iter::repeat_n('\\', backslashes * 2 + 1));
-                backslashes = 0;
-            }
-            _ => {
-                out.extend(std::iter::repeat_n('\\', backslashes));
-                backslashes = 0;
-            }
+        if c == '\\' {
+            backslashes += 1;
+            continue;
         }
-        if c != '\\' {
-            out.push(c);
-        }
+        // Backslashes before a quote are doubled, then the quote itself is escaped.
+        let n = if c == '"' { backslashes * 2 + 1 } else { backslashes };
+        out.extend(std::iter::repeat_n('\\', n));
+        out.push(c);
+        backslashes = 0;
     }
     // Trailing backslashes precede the closing quote, so they are doubled too.
     out.extend(std::iter::repeat_n('\\', backslashes * 2));
