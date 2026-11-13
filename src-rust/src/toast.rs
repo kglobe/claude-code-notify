@@ -9,7 +9,9 @@ use windows::core::*;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetLastInputInfo, TrackMouseEvent, LASTINPUTINFO, TRACKMOUSEEVENT, TME_LEAVE,
+};
 use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -91,6 +93,7 @@ const TIMER_START_FADE: usize = 2;
 const TIMER_REPOSITION: usize = 3;
 const TIMER_CHECK_BOTTOM: usize = 4;
 const TIMER_BAR: usize = 5;
+const TIMER_AWAY: usize = 6;
 
 const DISPLAY_MS: u32 = 6000;
 const FADE_MS: u32 = 600;
@@ -133,6 +136,9 @@ struct ToastState {
     is_fading: bool,
     /// Set while the display countdown runs; drives the bottom progress bar.
     countdown_start: Option<std::time::Instant>,
+    /// Last-input tick when the countdown started; unchanged at its end means the user is away.
+    /// None after the user came back, so that countdown always fades.
+    input_tick: Option<u32>,
     // Mouse state
     mouse_inside: bool,
     // Stacking state
@@ -436,9 +442,35 @@ unsafe extern "system" fn wnd_proc(
                 TIMER_START_FADE => {
                     let _ = KillTimer(Some(hwnd), TIMER_START_FADE);
                     let _ = KillTimer(Some(hwnd), TIMER_BAR);
-                    paint_bar(hwnd); // drain the bar fully before fading
-                    with_toast_mut(|state| state.is_fading = true);
-                    SetTimer(Some(hwnd), TIMER_FADE, 16, None);
+                    // No keyboard/mouse input during the countdown: the user is away, so hold
+                    // the card (bar shows full) until they come back.
+                    let away = with_toast_mut(|state| {
+                        let away = state.input_tick == Some(last_input_tick());
+                        if away {
+                            state.countdown_start = None;
+                        } else {
+                            state.is_fading = true;
+                        }
+                        away
+                    });
+                    paint_bar(hwnd); // away: refill; else drain the bar fully before fading
+                    if away {
+                        SetTimer(Some(hwnd), TIMER_AWAY, 500, None);
+                    } else {
+                        SetTimer(Some(hwnd), TIMER_FADE, 16, None);
+                    }
+                }
+                TIMER_AWAY => {
+                    with_toast_mut(|state| {
+                        if state.input_tick != Some(last_input_tick()) {
+                            let _ = KillTimer(Some(hwnd), TIMER_AWAY);
+                            // Hovering: the mouse-leave resume restarts the countdown.
+                            if !state.mouse_inside {
+                                start_countdown(hwnd, state);
+                                state.input_tick = None;
+                            }
+                        }
+                    });
                 }
                 TIMER_BAR => paint_bar(hwnd),
                 TIMER_FADE => {
@@ -613,6 +645,7 @@ unsafe extern "system" fn wnd_proc(
                     }
                     let _ = KillTimer(Some(hwnd), TIMER_START_FADE);
                     let _ = KillTimer(Some(hwnd), TIMER_BAR);
+                    let _ = KillTimer(Some(hwnd), TIMER_AWAY);
                     state.countdown_start = None; // resume restarts the full DISPLAY_MS, so the bar refills
                 } else {
                     // Resume: only start fade timer if bottom toast and mouse not inside
@@ -733,9 +766,17 @@ fn countdown_left(start: Option<std::time::Instant>) -> f32 {
     start.map_or(1.0, |t| 1.0 - (t.elapsed().as_millis() as f32 / DISPLAY_MS as f32).min(1.0))
 }
 
+/// Tick (ms) of the session's last keyboard or mouse input.
+fn last_input_tick() -> u32 {
+    let mut li = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+    unsafe { let _ = GetLastInputInfo(&mut li); }
+    li.dwTime
+}
+
 /// Start the display countdown and the progress-bar ticker. Caller holds the state borrow.
 unsafe fn start_countdown(hwnd: HWND, state: &mut ToastState) {
     state.countdown_start = Some(std::time::Instant::now());
+    state.input_tick = Some(last_input_tick());
     SetTimer(Some(hwnd), TIMER_START_FADE, DISPLAY_MS, None);
     SetTimer(Some(hwnd), TIMER_BAR, 33, None);
 }
@@ -1027,6 +1068,7 @@ pub fn show_toast(params: ToastParams) {
             fade_step,
             is_fading: false,
             countdown_start: None,
+            input_tick: None,
             mouse_inside: false,
             target_y: 0,
             is_bottom_toast: false,

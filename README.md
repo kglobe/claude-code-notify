@@ -21,6 +21,7 @@ This is a fork of [chuilishi/claude-code-notify](https://github.com/chuilishi/cl
 - **MCP prompts.** An MCP server asking for input gets its own card. Notifications that need nothing from you, such as auth success or an MCP request that was already completed or answered, are skipped.
 - **Several sessions at once.** Each Claude Code session keeps its own state, so every card jumps back to its own window and tab.
 - **Your prompt stays yours.** Prompts that Claude Code injects by itself (background task notifications, subagent hand-backs) don't replace your last prompt or the saved window.
+- **Waits while you're away.** If you don't touch the keyboard or mouse while a card counts down, it stays on screen until you come back, then counts down again and closes.
 - **Stacking.** Cards stack upward from the taskbar without overlapping and close one at a time.
 
 ## Install
@@ -70,6 +71,8 @@ The card follows the system light or dark theme and scales with DPI. A card that
 | Hover | Pause the countdown on every card |
 
 Each card stays for 6 seconds, then fades out over 0.6 seconds. When several cards stack, only the one nearest the taskbar counts down; the others wait their turn.
+
+If there was no keyboard or mouse input during those 6 seconds, the card treats you as away and stays, with the bar refilled. The first input after that (checked every 0.5 seconds) starts a fresh 6-second countdown, and that one always ends with the card closing.
 
 A sound plays with each card: the first `.wav` in `notifications/assets/sound/`, or the Windows "Asterisk" sound if there is none.
 
