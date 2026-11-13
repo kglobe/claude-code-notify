@@ -275,11 +275,12 @@ fn is_bottom_toast_check(hwnd: HWND, taskbar_edge: u32) -> bool {
     is_bottom(rect.top, other_tops, taskbar_edge == ABE_TOP)
 }
 
-/// The bottom toast is the one nearest the taskbar.
+/// The bottom toast is the one nearest the taskbar. A tie counts as bottom for both,
+/// so two toasts placed at the same y still fade instead of waiting on each other.
 fn is_bottom(my_top: i32, other_tops: impl IntoIterator<Item = i32>, taskbar_top: bool) -> bool {
     other_tops
         .into_iter()
-        .all(|t| if taskbar_top { t > my_top } else { t < my_top })
+        .all(|t| if taskbar_top { t >= my_top } else { t <= my_top })
 }
 
 fn notify_other_toasts_closing(my_hwnd: HWND) {
