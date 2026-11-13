@@ -11,6 +11,18 @@ Claude Code 的 Windows 通知卡片。Claude 回完話或需要你輸入時，�
 
 這個專案 fork 自 [chuilishi/claude-code-notify](https://github.com/chuilishi/claude-code-notify)。1.2.0 版重新設計了卡片外觀，修掉參數引號和卡片堆疊的 bug，也精簡了 Rust 程式。
 
+## 功能
+
+- **完成通知**：Claude 回完話會跳卡片，卡片上寫著你剛送出的 prompt，看一眼就知道是哪件事做完了。
+- **點一下跳回去**：點卡片會把你下指令的視窗拉回前面，縮小了也會還原。用 Windows Terminal 的話，還會切回原本的分頁。按完 Enter 馬上切去 Slack 或瀏覽器也沒關係，點卡片回到的是跑 Claude Code 的那個 app，不是當時在最前面的視窗。
+- **閒置提醒**：Claude 在等你回覆而你一直沒回時，Claude Code 會發出閒置通知（預設大約 60 秒），卡片寫「等你回覆」。人走開了，回來也不會漏掉。
+- **授權請求**：Claude 要執行工具、需要你同意時，卡片寫「需要授權」，並列出它要做的事。
+- **提問和計畫**：Claude 用 `AskUserQuestion` 問你問題時，卡片直接顯示題目。plan mode 擬好計畫（`ExitPlanMode`）時，卡片寫「計畫待確認」。
+- **MCP 詢問**：MCP server 要你輸入資料時，也會跳卡片。登入成功、MCP 詢問已完成或已回覆這類不用你處理的通知，直接略過。
+- **多個 session 同時開**：每個 Claude Code session 各存各的狀態，點每張卡片都會回到各自的視窗和分頁。
+- **不會被系統 prompt 蓋掉**：Claude Code 自己塞進來的 prompt（背景工作通知、subagent 回報）不會蓋掉你最後打的 prompt，也不會改掉記下的視窗。
+- **卡片堆疊**：好幾張卡片從工作列往上疊，不會互相蓋住，一張一張收掉。
+
 ## 安裝
 
 ```bash
@@ -67,7 +79,7 @@ plugin 只有一支 exe，`notifications/ToastWindow.exe`，由 `hooks/hooks.jso
 
 | Hook | 參數 | 做什麼 |
 |------|------|--------|
-| `UserPromptSubmit` | `--save` | 記下跑 Claude Code 的那個 app 的視窗（認不出來就記前景視窗）、Windows Terminal 目前的分頁、呼叫端 app 的 exe 路徑和你的 prompt |
+| `UserPromptSubmit` | `--save` | 記下跑 Claude Code 的那個 app 的視窗（認不出來就記前景視窗）、Windows Terminal 目前的分頁、呼叫端 app 的 exe 路徑和你的 prompt。開頭是 `<task-notification>` 或 `<agent-message ` 的 prompt 是 Claude Code 自己塞的，直接略過 |
 | `Notification` | `--input` | 顯示「需要輸入」卡片（授權、閒置、MCP elicitation） |
 | `PreToolUse`，matcher `AskUserQuestion\|ExitPlanMode` | `--input` | 顯示「有問題」或「計畫待確認」卡片 |
 | `Stop` | `--notify` | 顯示「已完成」卡片 |

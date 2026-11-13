@@ -11,6 +11,18 @@ Windows toast notifications for Claude Code. When Claude finishes a reply or nee
 
 This is a fork of [chuilishi/claude-code-notify](https://github.com/chuilishi/claude-code-notify). Version 1.2.0 redesigns the card, fixes argument quoting and toast stacking bugs, and trims the Rust code.
 
+## Features
+
+- **Done card.** When Claude finishes a reply, the card repeats the prompt you sent, so you can tell which task just finished.
+- **Jump back on click.** Clicking the card brings back the window you typed the prompt in and restores it if it was minimized. In Windows Terminal it also switches to the right tab. If you switched to another app (Slack, a browser) right after pressing Enter, the click still goes to the app running Claude Code, not to whatever was in front.
+- **Idle reminder.** If Claude has been waiting for your reply and you haven't answered, Claude Code sends an idle notification (after about 60 seconds by default). The card says 等你回覆 (waiting for you), so a session you walked away from doesn't sit there unnoticed.
+- **Permission requests.** When Claude needs approval to run a tool, the card says 需要授權 and shows what it wants to do.
+- **Questions and plans.** When Claude asks you a question (`AskUserQuestion`), the card shows the question text. When a plan is ready in plan mode (`ExitPlanMode`), the card says 計畫待確認.
+- **MCP prompts.** An MCP server asking for input gets its own card. Notifications that need nothing from you, such as auth success or an MCP request that was already completed or answered, are skipped.
+- **Several sessions at once.** Each Claude Code session keeps its own state, so every card jumps back to its own window and tab.
+- **Your prompt stays yours.** Prompts that Claude Code injects by itself (background task notifications, subagent hand-backs) don't replace your last prompt or the saved window.
+- **Stacking.** Cards stack upward from the taskbar without overlapping and close one at a time.
+
 ## Install
 
 ```bash
@@ -67,7 +79,7 @@ The plugin runs one exe, `notifications/ToastWindow.exe`, from five hooks in `ho
 
 | Hook | Flag | What it does |
 |------|------|--------------|
-| `UserPromptSubmit` | `--save` | Records the window of the app running Claude Code (the foreground window if it can't tell), the selected Windows Terminal tab, the calling app's exe path, and your prompt |
+| `UserPromptSubmit` | `--save` | Records the window of the app running Claude Code (the foreground window if it can't tell), the selected Windows Terminal tab, the calling app's exe path, and your prompt. Prompts that start with `<task-notification>` or `<agent-message ` are injected by Claude Code and skipped |
 | `Notification` | `--input` | Shows a "needs input" card (permission, idle, MCP elicitation) |
 | `PreToolUse` on `AskUserQuestion\|ExitPlanMode` | `--input` | Shows a "question" or "plan ready" card |
 | `Stop` | `--notify` | Shows the "done" card |
