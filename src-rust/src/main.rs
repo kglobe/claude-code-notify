@@ -96,7 +96,11 @@ fn run_notify_mode(debug: bool) -> i32 {
 
     debug_log!("Notify mode, session: {}", session_id);
 
-    let mut cmd = format!("\"{}\" --notify-show --session \"{}\"", exe_path(), session_id);
+    let mut cmd = format!(
+        "{} --notify-show --session {}",
+        spawn::quote_arg(&exe_path()),
+        spawn::quote_arg(&session_id)
+    );
     push_cwd_arg(&mut cmd, &input);
     if debug {
         cmd.push_str(" --debug");
@@ -168,15 +172,12 @@ fn run_input_mode(debug: bool) -> i32 {
     );
 
     let mut cmd = format!(
-        "\"{}\" --notify-show --input-mode --session \"{}\"",
-        exe_path(),
-        session_id
+        "{} --notify-show --input-mode --session {} --message {} --title {}",
+        spawn::quote_arg(&exe_path()),
+        spawn::quote_arg(&session_id),
+        spawn::quote_arg(&message),
+        spawn::quote_arg(&title)
     );
-    // Escape quotes in message and title (SPEC 16.2)
-    let escaped_msg = message.replace('"', "\\\"");
-    cmd.push_str(&format!(" --message \"{}\"", escaped_msg));
-    let escaped_title = title.replace('"', "\\\"");
-    cmd.push_str(&format!(" --title \"{}\"", escaped_title));
     push_cwd_arg(&mut cmd, &input);
     if debug {
         cmd.push_str(" --debug");
@@ -271,10 +272,8 @@ fn run_notify_show_mode(args: &cli::Args) -> i32 {
 /// Forward the hook's `cwd` to the display process.
 fn push_cwd_arg(cmd: &mut String, input: &str) {
     let cwd = json::extract_string(input, "cwd");
-    // Trailing backslash would escape the closing quote on the command line.
-    let cwd = cwd.trim_end_matches(['\\', '/']);
     if !cwd.is_empty() {
-        cmd.push_str(&format!(" --cwd \"{}\"", cwd.replace('"', "\\\"")));
+        cmd.push_str(&format!(" --cwd {}", spawn::quote_arg(&cwd)));
     }
 }
 

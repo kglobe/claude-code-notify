@@ -47,3 +47,41 @@ pub fn spawn_detached(cmd_line: &str) -> bool {
         Err(_) => false,
     }
 }
+
+/// Quote one argument for a Windows command line (MSVC / CommandLineToArgvW rules).
+pub fn quote_arg(s: &str) -> String {
+    format!("\"{}\"", s.replace('"', "\\\""))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::quote_arg;
+    use windows::Win32::UI::Shell::CommandLineToArgvW;
+
+    /// Split a command line the way the child process will.
+    fn split(cmd: &str) -> Vec<String> {
+        let wide = crate::util::encode_wide(cmd);
+        let mut n = 0;
+        unsafe {
+            let argv = CommandLineToArgvW(windows::core::PCWSTR(wide.as_ptr()), &mut n);
+            (0..n as usize).map(|i| (*argv.add(i)).to_string().unwrap()).collect()
+        }
+    }
+
+    #[test]
+    fn quoted_args_round_trip_through_argv_parsing() {
+        for s in [
+            r#"Use "C:\dir\" here?"#,
+            r"C:\path\",
+            r"C:\a\\",
+            r#"say "hi""#,
+            r#"back\"quote"#,
+            "",
+            "plain",
+        ] {
+            let cmd = format!("exe.exe --message {} --title {}", quote_arg(s), quote_arg("t"));
+            let args = crate::cli::parse_args(split(&cmd));
+            assert_eq!((args.message.as_str(), args.title.as_str()), (s, "t"), "cmd: {cmd}");
+        }
+    }
+}
