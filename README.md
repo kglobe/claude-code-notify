@@ -42,13 +42,12 @@ From top to bottom:
 
 | Row | Content |
 |-----|---------|
-| Header | Claude logo, "Claude Code", the time, and a close button |
-| Title | Folder name of the session's working directory, with a badge: a check mark when done, `!` when Claude needs you |
-| Status | One of 已完成 (done), 需要授權 (permission needed), 等你回覆 (waiting for you), MCP 詢問 (MCP asks), 有問題要問你 (Claude has a question), 計畫待確認 (plan ready for approval), 需要你輸入 (input needed) |
-| Message | Your last prompt, or the question or permission detail |
-| Path | Full working directory |
+| Header | Claude logo, "Claude Code · folder name", the time, and a close button |
+| Status | An icon tile (a check mark when done, a warning sign when Claude needs you) and a label: one of 已完成 (done), 需要授權 (permission needed), 等你回覆 (waiting for you), MCP 詢問 (MCP asks), 有問題要問你 (Claude has a question), 計畫待確認 (plan ready for approval), 需要你輸入 (input needed) |
+| Message | Your last prompt, or the question or permission detail, in the largest type on the card |
+| Footer | Full working directory and a click hint; a thin bar along the bottom shows the time left on screen |
 
-The card follows the system light or dark theme and scales with DPI. The status text is in Traditional Chinese; there is no setting to change it.
+The card follows the system light or dark theme and scales with DPI. A card that needs you has an amber tint and border. The status text is in Traditional Chinese; there is no setting to change it.
 
 ## Using it
 

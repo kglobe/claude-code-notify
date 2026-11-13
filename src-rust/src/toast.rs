@@ -20,11 +20,18 @@ const WINDOW_WIDTH: i32 = 380;
 const PAD: i32 = 16;
 const RADIUS: f32 = 8.0;
 const LOGO_SIZE: i32 = 16;
-const BADGE_SIZE: i32 = 20;
-const TEXT_LEFT: i32 = PAD + BADGE_SIZE + 12;
+const ICON_SIZE: i32 = 36;
+const ICON_RADIUS: f32 = 10.0;
+const TEXT_LEFT: i32 = PAD + ICON_SIZE + 14;
+const PILL_H: i32 = 20;
+const PILL_RADIUS: f32 = 6.0;
+const MESSAGE_PX: f32 = 15.5;
+const FOOTER_H: i32 = 34;
+const BAR_H: i32 = 2;
+const CLICK_HINT: &str = "點擊切回視窗";
 const CLOSE_BUTTON_SIZE: i32 = 28;
 const CLOSE_BUTTON_MARGIN: i32 = 8;
-const STACK_GAP: i32 = 8;
+const STACK_GAP: i32 = 10;
 const EDGE_MARGIN: i32 = 12;
 /// Transparent band around the card that holds the drop shadow.
 const SHADOW: i32 = 12;
@@ -46,29 +53,44 @@ struct Theme {
     /// Warm amber tint so a needs-input card stands out even in peripheral vision.
     warn_bg: u32,
     warn_bg_hover: u32,
+    /// Footer bar, one step darker than the card (bg / warn_bg).
+    footer: u32,
+    warn_footer: u32,
     border: u32,
+    /// Needs-input hairline: warn mixed ~30% into warn_bg, present but not a bright rule.
+    warn_border: u32,
     title: u32,
-    body: u32,
     muted: u32,
+    /// Status text, glyph and countdown bar colour.
     ok: u32,
     warn: u32,
-    on_badge: u32,
+    /// Borderless icon tile and pill fill (vivid #10B981 / #F59E0B tinted over the non-hover bg).
+    ok_fill: u32,
+    warn_fill: u32,
+    /// Countdown bar: the same vivid hue at ~55% over the footer, so it reads as a hint, not a rule.
+    ok_bar: u32,
+    warn_bar: u32,
     close_hover: u32,
 }
 
 const LIGHT: Theme = Theme {
-    bg: 0xFAF9F5, bg_hover: 0xEEEDE6, warn_bg: 0xFBF3DD, warn_bg_hover: 0xF3EAD0, border: 0xDEDCD3, title: 0x141413, body: 0x3D3D3A,
-    muted: 0x66655F, ok: 0x0F7B0F, warn: 0x8A6200, on_badge: 0xFFFFFF, close_hover: 0xE8E6DC,
+    bg: 0xFAF9F5, bg_hover: 0xEEEDE6, warn_bg: 0xFBF3DD, warn_bg_hover: 0xF3EAD0,
+    footer: 0xF0EDE6, warn_footer: 0xEFE8D3, border: 0xDEDCD3, warn_border: 0xCEBC90, title: 0x141413, muted: 0x66655F,
+    ok: 0x0D7A4F, warn: 0x7A5700, ok_fill: 0xDEF1E7, warn_fill: 0xFAE6BE, ok_bar: 0x75D0AE, warn_bar: 0xF2BF65,
+    close_hover: 0xE8E6DC,
 };
 const DARK: Theme = Theme {
-    bg: 0x262624, bg_hover: 0x33332F, warn_bg: 0x2E2A1F, warn_bg_hover: 0x3A3528, border: 0x403F3B,
-    title: 0xFAF9F5, body: 0xD6D4CC, muted: 0xA6A49C, ok: 0x5FB052, warn: 0xE8C15A, on_badge: 0x1F1E1D, close_hover: 0x3A3935,
+    bg: 0x262624, bg_hover: 0x33332F, warn_bg: 0x2E2A1F, warn_bg_hover: 0x3A3528,
+    footer: 0x31312E, warn_footer: 0x38342A, border: 0x403F3B, warn_border: 0x665731, title: 0xFAF9F5, muted: 0xA6A49C,
+    ok: 0x4CC79A, warn: 0xE8C15A, ok_fill: 0x233C32, warn_fill: 0x523F1B, ok_bar: 0x1F7C5C, warn_bar: 0xA06E19,
+    close_hover: 0x3A3935,
 };
 
 const TIMER_FADE: usize = 1;
 const TIMER_START_FADE: usize = 2;
 const TIMER_REPOSITION: usize = 3;
 const TIMER_CHECK_BOTTOM: usize = 4;
+const TIMER_BAR: usize = 5;
 
 const DISPLAY_MS: u32 = 6000;
 const FADE_MS: u32 = 600;
@@ -109,6 +131,8 @@ struct ToastState {
     alpha: u8,
     fade_step: u8,
     is_fading: bool,
+    /// Set while the display countdown runs; drives the bottom progress bar.
+    countdown_start: Option<std::time::Instant>,
     // Mouse state
     mouse_inside: bool,
     // Stacking state
@@ -411,9 +435,12 @@ unsafe extern "system" fn wnd_proc(
             match wparam.0 {
                 TIMER_START_FADE => {
                     let _ = KillTimer(Some(hwnd), TIMER_START_FADE);
+                    let _ = KillTimer(Some(hwnd), TIMER_BAR);
+                    paint_bar(hwnd); // drain the bar fully before fading
                     with_toast_mut(|state| state.is_fading = true);
                     SetTimer(Some(hwnd), TIMER_FADE, 16, None);
                 }
+                TIMER_BAR => paint_bar(hwnd),
                 TIMER_FADE => {
                     let should_destroy = with_toast_mut(|state| {
                         if state.alpha > state.fade_step {
@@ -443,7 +470,7 @@ unsafe extern "system" fn wnd_proc(
                         });
                         let _ = KillTimer(Some(hwnd), TIMER_CHECK_BOTTOM);
                         if !inside {
-                            SetTimer(Some(hwnd), TIMER_START_FADE, DISPLAY_MS, None);
+                            with_toast_mut(|state| start_countdown(hwnd, state));
                         }
                     }
                 }
@@ -563,7 +590,7 @@ unsafe extern "system" fn wnd_proc(
                     state.is_bottom_toast = true;
                     let _ = KillTimer(Some(hwnd), TIMER_CHECK_BOTTOM);
                     if !state.mouse_inside {
-                        SetTimer(Some(hwnd), TIMER_START_FADE, DISPLAY_MS, None);
+                        start_countdown(hwnd, state);
                     }
                 });
             }
@@ -585,13 +612,18 @@ unsafe extern "system" fn wnd_proc(
                         set_alpha(hwnd, INITIAL_ALPHA);
                     }
                     let _ = KillTimer(Some(hwnd), TIMER_START_FADE);
+                    let _ = KillTimer(Some(hwnd), TIMER_BAR);
+                    state.countdown_start = None; // resume restarts the full DISPLAY_MS, so the bar refills
                 } else {
                     // Resume: only start fade timer if bottom toast and mouse not inside
                     if state.is_bottom_toast && !state.mouse_inside {
-                        SetTimer(Some(hwnd), TIMER_START_FADE, DISPLAY_MS, None);
+                        start_countdown(hwnd, state);
                     }
                 }
             });
+            if pause {
+                paint_bar(hwnd);
+            }
             LRESULT(0)
         }
 
@@ -628,45 +660,84 @@ fn sdf_rrect(px: f32, py: f32, cx: f32, cy: f32, hw: f32, hh: f32, r: f32) -> f3
     (ox * ox + oy * oy).sqrt() + qx.max(qy).min(0.0) - r
 }
 
+/// `sdf_rrect` for a RECT in the same coordinate space as (px, py).
+fn sdf_rect(px: f32, py: f32, rc: &RECT, r: f32) -> f32 {
+    sdf_rrect(px, py, (rc.left + rc.right) as f32 / 2.0, (rc.top + rc.bottom) as f32 / 2.0,
+        (rc.right - rc.left) as f32 / 2.0, (rc.bottom - rc.top) as f32 / 2.0, r)
+}
+
+/// Countdown bar rows in card coords: the last BAR_H px just inside the bottom hairline.
+fn bar_rows(card_h: i32, scale: f32) -> (i32, i32) {
+    let bottom = card_h - scale.max(1.0) as i32;
+    (bottom - px(BAR_H, scale), bottom)
+}
+
+/// Bar colour at card column `x`: inset by the corner radius so it never runs into the rounded edge.
+fn bar_pixel(x: i32, card_w: i32, scale: f32, left: f32, bar: u32, footer: u32) -> u32 {
+    let inset = px(RADIUS as i32, scale);
+    let end = inset + ((card_w - 2 * inset) as f32 * left) as i32;
+    if x >= inset && x < end { bar } else { footer }
+}
+
 fn coverage(d: f32) -> f32 {
     (0.5 - d).clamp(0.0, 1.0)
 }
 
 /// Vertical layout in device px, derived from logical constants and message length.
+/// Text extent in device px; `max_w > 0` wraps to that width.
+unsafe fn text_size(dc: HDC, text: &str, size: i32, weight: i32, family: &str, max_w: i32) -> (i32, i32) {
+    if text.is_empty() {
+        return (0, 0);
+    }
+    let font = make_font(size, weight, family);
+    let old = SelectObject(dc, HGDIOBJ(font.0));
+    let mut r = RECT { left: 0, top: 0, right: max_w, bottom: 0 };
+    let wrap = if max_w > 0 { DT_WORDBREAK | DT_EDITCONTROL } else { DT_SINGLELINE };
+    let mut buf = crate::util::encode_wide(text);
+    let len = buf.len() - 1;
+    DrawTextW(dc, &mut buf[..len], &mut r, DT_CALCRECT | DT_NOPREFIX | wrap);
+    SelectObject(dc, old);
+    let _ = DeleteObject(HGDIOBJ(font.0));
+    (r.right, r.bottom)
+}
+
+/// Vertical layout in device px (card coords): header, pill + message block, footer bar.
 struct Layout {
     header_y: i32,
-    title_y: i32,
-    status_y: i32,
+    pill_y: i32,
     message_y: i32,
     message_h: i32,
-    path_y: i32,
+    footer_y: i32,
     height: i32,
+}
+
+fn message_px(scale: f32) -> i32 {
+    (MESSAGE_PX * scale).round() as i32
 }
 
 unsafe fn measure_layout(dc: HDC, scale: f32, width: i32, message: &str) -> Layout {
     let s = |v: i32| (v as f32 * scale).round() as i32;
     let header_y = s(12);
-    let title_y = s(36);
-    // Title + status read as one group; message and path step away from it.
-    let status_y = s(60);
-    let message_y = s(84);
+    let pill_y = s(44);
+    let message_y = pill_y + s(PILL_H) + s(8);
+    let (_, line_h) = text_size(dc, "Ag", message_px(scale), 600, "Segoe UI", 0);
+    let (_, mh) = text_size(dc, message, message_px(scale), 600, "Segoe UI", width - s(TEXT_LEFT) - s(PAD));
+    let message_h = mh.min(2 * line_h); // at most 2 lines, the rest ellipsised
+    let body_bottom = (message_y + message_h).max(pill_y + s(ICON_SIZE));
+    let footer_y = body_bottom + s(16);
+    Layout { header_y, pill_y, message_y, message_h, footer_y, height: footer_y + s(FOOTER_H) }
+}
 
-    let mut message_h = 0;
-    if !message.is_empty() {
-        let font = make_font(s(14), 400, "Segoe UI");
-        let old = SelectObject(dc, HGDIOBJ(font.0));
-        let mut r = RECT { left: 0, top: 0, right: width - s(TEXT_LEFT) - s(PAD), bottom: 0 };
-        let mut buf = crate::util::encode_wide(message);
-        let len = buf.len() - 1;
-        DrawTextW(dc, &mut buf[..len], &mut r, DT_CALCRECT | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX);
-        SelectObject(dc, old);
-        let _ = DeleteObject(HGDIOBJ(font.0));
-        message_h = r.bottom.min(s(40)).max(s(20)); // 1-2 lines
-    }
+/// Fraction of the display countdown left: 1.0 when not counting (paused or waiting its turn).
+fn countdown_left(start: Option<std::time::Instant>) -> f32 {
+    start.map_or(1.0, |t| 1.0 - (t.elapsed().as_millis() as f32 / DISPLAY_MS as f32).min(1.0))
+}
 
-    let path_y = if message_h > 0 { message_y + message_h + s(8) } else { message_y };
-    let height = path_y + s(16) + s(16);
-    Layout { header_y, title_y, status_y, message_y, message_h, path_y, height }
+/// Start the display countdown and the progress-bar ticker. Caller holds the state borrow.
+unsafe fn start_countdown(hwnd: HWND, state: &mut ToastState) {
+    state.countdown_start = Some(std::time::Instant::now());
+    SetTimer(Some(hwnd), TIMER_START_FADE, DISPLAY_MS, None);
+    SetTimer(Some(hwnd), TIMER_BAR, 33, None);
 }
 
 #[allow(clippy::too_many_arguments)] // call sites read better with font args inline than via a struct
@@ -688,10 +759,11 @@ unsafe fn draw_text(dc: HDC, text: &str, rect: RECT, size: i32, weight: i32, fam
 /// Paint the whole card into the DIB, then push it to the layered window.
 unsafe fn render(hwnd: HWND) {
     let (title, status, message, cwd, time, input_mode, icon, logo_icon, light,
-         scale, w, h, dc, bits, hover, hover_close, alpha) = with_toast(|t| (
+         scale, w, h, dc, bits, hover, hover_close, alpha, countdown) = with_toast(|t| (
         t.title.clone(), t.status.clone(), t.message.clone(), t.cwd.clone(), t.time.clone(),
         t.input_mode, t.icon, t.logo, t.light,
         t.scale, t.width, t.height, t.mem_dc, t.bits, t.mouse_inside, t.hover_close, t.alpha,
+        t.countdown_start,
     ));
     let theme = if light { &LIGHT } else { &DARK };
     let s = |v: i32| (v as f32 * scale).round() as i32;
@@ -701,16 +773,21 @@ unsafe fn render(hwnd: HWND) {
     let (cw, ch) = (w - 2 * o, h - 2 * o);
     let layout = measure_layout(dc, scale, cw, &message);
     let accent = if input_mode { theme.warn } else { theme.ok };
+    let (fill, bar, footer) = if input_mode { (theme.warn_fill, theme.warn_bar, theme.warn_footer) }
+        else { (theme.ok_fill, theme.ok_bar, theme.footer) };
 
-    // Pass 1: shapes (background, hairline border, status badge, close hover), anti-aliased via SDF.
+    // Pass 1: shapes (card, footer bar, countdown bar, icon tile, status pill, close hover), anti-aliased via SDF.
     let px = std::slice::from_raw_parts_mut(bits, (w * h) as usize);
     let (cx, cy, hw, hh) = (w as f32 / 2.0, h as f32 / 2.0, cw as f32 / 2.0, ch as f32 / 2.0);
     let r = sf(RADIUS);
     let bw = sf(1.0).max(1.0);
     let of = o as f32;
-    let badge_r = sf(BADGE_SIZE as f32) / 2.0;
-    let badge_cx = (s(PAD) as f32) + badge_r;
-    let badge_cy = (layout.title_y + s(13)) as f32;
+    let text_left = s(TEXT_LEFT);
+    let (status_w, _) = text_size(dc, &status, s(12), 600, "Segoe UI", 0);
+    let pill = RECT { left: text_left, top: layout.pill_y, right: text_left + status_w + s(12), bottom: layout.pill_y + s(PILL_H) };
+    let tile = RECT { left: s(PAD), top: layout.pill_y, right: s(PAD + ICON_SIZE), bottom: layout.pill_y + s(ICON_SIZE) };
+    let (bar_top, bar_bottom) = bar_rows(ch, scale);
+    let left = countdown_left(countdown);
     let close = close_rect(cw, scale);
     let bg = match (input_mode, hover) {
         (true, true) => theme.warn_bg_hover,
@@ -722,17 +799,20 @@ unsafe fn render(hwnd: HWND) {
         for x in 0..w {
             let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
             let d = sdf_rrect(fx, fy, cx, cy, hw, hh, r);
-            // Only needs-input gets a solid badge and an accent border: it must outrank "done".
-            let mut c = lerp_rgb(bg, if input_mode { accent } else { theme.border }, coverage(-(d + bw)));
-            if input_mode {
-                let db = ((fx - of - badge_cx).powi(2) + (fy - of - badge_cy).powi(2)).sqrt() - badge_r;
-                c = lerp_rgb(c, accent, coverage(db));
+            let (ly, lx) = (y - o, x - o);
+            let mut c = if ly < layout.footer_y { bg }
+                else if ly < layout.footer_y + bw as i32 { theme.border } // footer separator
+                else { footer };
+            if (bar_top..bar_bottom).contains(&ly) {
+                c = bar_pixel(lx, cw, scale, left, bar, footer);
+            }
+            // Needs-input also gets a warm border: it must outrank "done".
+            c = lerp_rgb(c, if input_mode { theme.warn_border } else { theme.border }, coverage(-(d + bw)));
+            for (rc, rad) in [(&tile, ICON_RADIUS), (&pill, PILL_RADIUS)] {
+                c = lerp_rgb(c, fill, coverage(sdf_rect(fx - of, fy - of, rc, sf(rad))));
             }
             if hover_close {
-                let dc_ = sdf_rrect(fx - of, fy - of,
-                    (close.left + close.right) as f32 / 2.0, (close.top + close.bottom) as f32 / 2.0,
-                    (close.right - close.left) as f32 / 2.0, (close.bottom - close.top) as f32 / 2.0, sf(4.0));
-                c = lerp_rgb(c, theme.close_hover, coverage(dc_));
+                c = lerp_rgb(c, theme.close_hover, coverage(sdf_rect(fx - of, fy - of, &close, sf(4.0))));
             }
             px[(y * w + x) as usize] = c;
         }
@@ -741,8 +821,8 @@ unsafe fn render(hwnd: HWND) {
     // Pass 2: GDI content on top of the opaque card.
     SetBkMode(dc, TRANSPARENT);
     let _ = SetViewportOrgEx(dc, o, o, None);
-    // Logo shares the badge's centre line; header text shares the body's left edge.
-    let logo_x = s(PAD + (BADGE_SIZE - LOGO_SIZE) / 2);
+    // Logo shares the icon tile's centre line; header text shares the body's left edge.
+    let logo_x = s(PAD + (ICON_SIZE - LOGO_SIZE) / 2);
     let logo_y = layout.header_y + s(2);
     let logo = s(LOGO_SIZE);
     let drawn = !logo_icon.is_invalid()
@@ -751,39 +831,38 @@ unsafe fn render(hwnd: HWND) {
         let _ = DrawIconEx(dc, logo_x, logo_y, icon, logo, logo, 0, None, DI_NORMAL);
     }
 
-    let header = RECT { left: s(TEXT_LEFT), top: layout.header_y, right: close.left - s(4), bottom: layout.header_y + s(20) };
-    draw_text(dc, "Claude Code", header, s(12), 400, "Segoe UI", theme.muted, DT_SINGLELINE | DT_VCENTER);
+    let text_right = cw - s(PAD);
+    let (time_w, _) = text_size(dc, &time, s(12), 400, "Segoe UI", 0);
+    let header = RECT { left: text_left, top: layout.header_y, right: close.left - s(4), bottom: layout.header_y + s(20) };
+    let app = if title.is_empty() { "Claude Code".to_string() } else { format!("Claude Code  ·  {title}") };
+    draw_text(dc, &app, RECT { right: header.right - time_w - s(12), ..header }, s(12), 400, "Segoe UI", theme.muted,
+        DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
     draw_text(dc, &time, header, s(12), 400, "Segoe UI", theme.muted, DT_SINGLELINE | DT_VCENTER | DT_RIGHT);
 
     // Close glyph (Fluent "ChromeClose")
     draw_text(dc, "\u{E8BB}", close, s(10), 400, "Segoe Fluent Icons",
         if hover_close { theme.title } else { theme.muted }, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
 
-    // Badge glyph: check mark for done, exclamation for needs-input
-    let badge = RECT {
-        left: (badge_cx - badge_r) as i32, top: (badge_cy - badge_r) as i32,
-        right: (badge_cx + badge_r).ceil() as i32, bottom: (badge_cy + badge_r).ceil() as i32,
-    };
-    if input_mode {
-        draw_text(dc, "!", badge, s(14), 800, "Segoe UI", theme.on_badge, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
-    } else {
-        draw_text(dc, "\u{E73E}", badge, s(16), 700, "Segoe Fluent Icons", accent, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
-    }
+    // Tile glyph (Fluent "Warning" / "CheckMark"): the shape differs, not just the colour.
+    // The triangle's mass sits low, so it reads high when box-centred: drop it 1px. The check stays put.
+    let nudge = if input_mode { s(1) } else { 0 };
+    draw_text(dc, if input_mode { "\u{E7BA}" } else { "\u{E73E}" },
+        RECT { top: tile.top + nudge, bottom: tile.bottom + nudge, ..tile }, s(18), 400, "Segoe Fluent Icons", accent,
+        DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+    // CJK glyphs sit high in their cell; nudge down 1px to centre optically in the pill.
+    draw_text(dc, &status, RECT { top: pill.top + s(1), bottom: pill.bottom + s(1), ..pill }, s(12), 600, "Segoe UI", accent, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+    // The message is the point of the card, so it gets the largest type.
+    draw_text(dc, &message,
+        RECT { left: text_left, top: layout.message_y, right: text_right, bottom: layout.message_y + layout.message_h },
+        message_px(scale), 600, "Segoe UI", theme.title, DT_WORDBREAK | DT_EDITCONTROL | DT_END_ELLIPSIS);
 
-    let text_left = s(TEXT_LEFT);
-    let text_right = cw - s(PAD);
-    draw_text(dc, &title, RECT { left: text_left, top: layout.title_y, right: text_right, bottom: layout.title_y + s(26) },
-        s(17), 600, "Segoe UI", theme.title, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
-    draw_text(dc, &status, RECT { left: text_left, top: layout.status_y, right: text_right, bottom: layout.status_y + s(20) },
-        // "Done" stays quiet: the check mark carries the colour, the word does not.
-        s(13), 600, "Segoe UI", if input_mode { accent } else { theme.body }, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
-    if layout.message_h > 0 {
-        draw_text(dc, &message,
-            RECT { left: text_left, top: layout.message_y, right: text_right, bottom: layout.message_y + layout.message_h },
-            s(14), 400, "Segoe UI", theme.body, DT_WORDBREAK | DT_EDITCONTROL | DT_END_ELLIPSIS);
-    }
-    draw_text(dc, &cwd, RECT { left: text_left, top: layout.path_y, right: text_right, bottom: layout.path_y + s(16) },
-        s(12), 400, "Segoe UI", theme.muted, DT_SINGLELINE | DT_VCENTER | DT_PATH_ELLIPSIS);
+    // Footer: path on the left, click hint on the right, centred above the countdown bar.
+    let foot = RECT { left: s(PAD), top: layout.footer_y, right: text_right, bottom: bar_top };
+    // JhengHei UI at 12px keeps thin CJK strokes solid under grayscale AA, where Segoe's fallback breaks up.
+    let (hint_w, _) = text_size(dc, CLICK_HINT, s(12), 600, "Microsoft JhengHei UI", 0);
+    draw_text(dc, CLICK_HINT, foot, s(12), 600, "Microsoft JhengHei UI", theme.muted, DT_SINGLELINE | DT_VCENTER | DT_RIGHT);
+    draw_text(dc, &cwd, RECT { right: foot.right - hint_w - s(12), ..foot }, s(11), 400, "Consolas", theme.muted,
+        DT_SINGLELINE | DT_VCENTER | DT_PATH_ELLIPSIS);
 
     let _ = SetViewportOrgEx(dc, 0, 0, None);
 
@@ -804,6 +883,34 @@ unsafe fn render(hwnd: HWND) {
         }
     }
 
+    present(hwnd, dc, w, h, alpha);
+}
+
+/// Repaint only the countdown bar in the existing surface; cheap enough for a 30 fps ticker.
+unsafe fn paint_bar(hwnd: HWND) {
+    let (input_mode, light, scale, w, h, dc, bits, alpha, countdown) = with_toast(|t| (
+        t.input_mode, t.light, t.scale, t.width, t.height, t.mem_dc, t.bits, t.alpha, t.countdown_start,
+    ));
+    let theme = if light { &LIGHT } else { &DARK };
+    let (bar, footer) = if input_mode { (theme.warn_bar, theme.warn_footer) } else { (theme.ok_bar, theme.footer) };
+    let o = px(SHADOW, scale);
+    let (cw, ch) = (w - 2 * o, h - 2 * o);
+    let (top, bottom) = bar_rows(ch, scale);
+    let left = countdown_left(countdown);
+    let pixels = std::slice::from_raw_parts_mut(bits, (w * h) as usize);
+    for y in top..bottom {
+        for x in 0..cw {
+            let i = ((y + o) * w + x + o) as usize;
+            // Opaque pixels only: the rounded corners keep their premultiplied edge from render().
+            if pixels[i] >> 24 == 0xFF {
+                pixels[i] = 0xFF00_0000 | bar_pixel(x, cw, scale, left, bar, footer);
+            }
+        }
+    }
+    present(hwnd, dc, w, h, alpha);
+}
+
+unsafe fn present(hwnd: HWND, dc: HDC, w: i32, h: i32, alpha: u8) {
     let mut wr = RECT::default();
     let _ = GetWindowRect(hwnd, &mut wr);
     let dst = POINT { x: wr.left, y: wr.top };
@@ -919,6 +1026,7 @@ pub fn show_toast(params: ToastParams) {
             alpha: INITIAL_ALPHA,
             fade_step,
             is_fading: false,
+            countdown_start: None,
             mouse_inside: false,
             target_y: 0,
             is_bottom_toast: false,
@@ -966,8 +1074,10 @@ pub fn show_toast(params: ToastParams) {
 
         // Determine if bottom toast and start appropriate timer
         if is_bottom_toast_check(hwnd, taskbar_edge) {
-            with_toast_mut(|state| state.is_bottom_toast = true);
-            SetTimer(Some(hwnd), TIMER_START_FADE, DISPLAY_MS, None);
+            with_toast_mut(|state| {
+                state.is_bottom_toast = true;
+                start_countdown(hwnd, state);
+            });
         } else {
             with_toast_mut(|state| state.is_bottom_toast = false);
             SetTimer(Some(hwnd), TIMER_CHECK_BOTTOM, 200, None);

@@ -225,8 +225,7 @@ fn run_notify_show_mode(args: &cli::Args) -> i32 {
     } else {
         ("已完成".to_string(), st.user_prompt.clone())
     };
-    let folder = cwd_folder(&args.cwd);
-    let title = if folder.is_empty() { "Claude Code".to_string() } else { folder };
+    let title = cwd_folder(&args.cwd); // may be empty: the header then shows "Claude Code" alone
 
     // 3. Sanitize message (SPEC 14.3)
     let message = sanitize_message(&message);
