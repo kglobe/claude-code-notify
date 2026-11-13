@@ -65,6 +65,7 @@ function Show-Toast([string]$session, [string]$hookMode, [string]$json) {
     $psi = [System.Diagnostics.ProcessStartInfo]::new($Exe)
     $psi.RedirectStandardInput = $true
     $psi.UseShellExecute = $false
+    $psi.StandardInputEncoding = [System.Text.UTF8Encoding]::new($false)  # Claude Code hooks send UTF-8; default is the console code page
     $psi.ArgumentList.Add("--$hookMode")
     $psi.ArgumentList.Add('--debug')
     $p = [System.Diagnostics.Process]::Start($psi)
