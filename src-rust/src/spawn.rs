@@ -50,7 +50,29 @@ pub fn spawn_detached(cmd_line: &str) -> bool {
 
 /// Quote one argument for a Windows command line (MSVC / CommandLineToArgvW rules).
 pub fn quote_arg(s: &str) -> String {
-    format!("\"{}\"", s.replace('"', "\\\""))
+    let mut out = String::from("\"");
+    let mut backslashes = 0;
+    for c in s.chars() {
+        match c {
+            '\\' => backslashes += 1,
+            '"' => {
+                // Backslashes before a quote are doubled, then the quote itself is escaped.
+                out.extend(std::iter::repeat_n('\\', backslashes * 2 + 1));
+                backslashes = 0;
+            }
+            _ => {
+                out.extend(std::iter::repeat_n('\\', backslashes));
+                backslashes = 0;
+            }
+        }
+        if c != '\\' {
+            out.push(c);
+        }
+    }
+    // Trailing backslashes precede the closing quote, so they are doubled too.
+    out.extend(std::iter::repeat_n('\\', backslashes * 2));
+    out.push('"');
+    out
 }
 
 #[cfg(test)]
