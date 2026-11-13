@@ -1001,5 +1001,8 @@ mod tests {
         assert!(is_bottom(10, [200, 400], true));
         assert!(!is_bottom(200, [10, 400], true));
         assert!(is_bottom(500, [], false));
+        // Two toasts placed at the same y (concurrent spawn) must not both wait forever.
+        assert!(is_bottom(500, [500], false));
+        assert!(is_bottom(10, [10], true));
     }
 }
