@@ -298,6 +298,7 @@ fn sanitize_message(msg: &str) -> String {
 }
 
 /// Prompts Claude Code injects itself (`<task-notification>`, `<agent-message …>`) rather than ones the user typed.
+// shortcut: guesses from the text; a typed prompt starting with `<` keeps the previous window. Use a hook JSON source field if Claude Code adds one.
 fn is_system_prompt(prompt: &str) -> bool {
     prompt.trim_start().starts_with('<')
 }

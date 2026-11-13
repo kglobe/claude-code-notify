@@ -95,7 +95,7 @@ mod tests {
 
     #[test]
     fn load_state_drops_a_dead_window() {
-        let id = format!("test-saved-target-{}", std::process::id());
+        let id = format!("test-load-state-{}", std::process::id());
         assert_eq!(load_state(&id).target_hwnd, HWND::default());
 
         let desktop = unsafe { GetDesktopWindow() };
