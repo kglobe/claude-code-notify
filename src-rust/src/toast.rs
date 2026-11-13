@@ -287,6 +287,8 @@ fn notify_other_toasts_closing(my_hwnd: HWND) {
     let mut my_rect = RECT::default();
     unsafe { let _ = GetWindowRect(my_hwnd, &mut my_rect); }
     let others = enum_other_toasts();
+    // A hovered toast that closes never gets WM_MOUSELEAVE, so it must send the resume itself.
+    let was_hovered = with_toast(|s| s.mouse_inside);
     // Hide before posting: receivers run in other processes and may handle the
     // message at once, so they must already see this toast gone.
     unsafe { let _ = ShowWindow(my_hwnd, SW_HIDE); }
@@ -299,6 +301,9 @@ fn notify_other_toasts_closing(my_hwnd: HWND) {
                 WPARAM(my_rect.top as usize),
                 LPARAM((my_rect.bottom - my_rect.top) as isize),
             );
+            if was_hovered {
+                let _ = PostMessageW(Some(t.hwnd), WM_TOAST_PAUSE_TIMER, WPARAM(0), LPARAM(0));
+            }
         }
     }
 }
@@ -378,6 +383,14 @@ fn animate_to_position(hwnd: HWND) {
 
     if done {
         unsafe { let _ = KillTimer(Some(hwnd), TIMER_REPOSITION); }
+        // Sliding under a still cursor sends no mouse input; replay it so the hover pause kicks in.
+        let mut pt = POINT::default();
+        unsafe {
+            if GetCursorPos(&mut pt).is_ok() && WindowFromPoint(pt) == hwnd && ScreenToClient(hwnd, &mut pt).as_bool() {
+                let lparam = ((pt.y as u16 as isize) << 16) | (pt.x as u16 as isize);
+                let _ = SendMessageW(hwnd, WM_MOUSEMOVE, Some(WPARAM(0)), Some(LPARAM(lparam)));
+            }
+        }
     }
 }
 

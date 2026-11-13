@@ -82,8 +82,34 @@ pub fn load_state(session_id: &str) -> State {
     state
 }
 
+/// Target window, WT tab and caller exe saved by an earlier prompt in this session, if the window still exists.
+pub fn saved_target(session_id: &str) -> Option<(HWND, String, String)> {
+    let s = load_state(session_id);
+    (s.target_hwnd != HWND::default()).then_some((s.target_hwnd, s.wt_runtime_id, s.icon_path))
+}
+
 /// Delete the state file for a session.
 pub fn delete_state(session_id: &str) {
     let path = state_file_path(session_id);
     let _ = std::fs::remove_file(&path);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::UI::WindowsAndMessaging::GetDesktopWindow;
+
+    #[test]
+    fn saved_target_only_returns_a_live_window() {
+        let id = format!("test-saved-target-{}", std::process::id());
+        assert_eq!(saved_target(&id), None);
+
+        let desktop = unsafe { GetDesktopWindow() };
+        save_state(&id, desktop, "rid", r"C:\app.exe", "p");
+        assert_eq!(saved_target(&id), Some((desktop, "rid".to_string(), r"C:\app.exe".to_string())));
+
+        save_state(&id, HWND(0x7fff_fff0 as *mut _), "rid", "", "p");
+        assert_eq!(saved_target(&id), None);
+        delete_state(&id);
+    }
 }
