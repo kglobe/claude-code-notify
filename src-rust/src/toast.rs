@@ -87,7 +87,9 @@ struct ToastState {
     time: String,
     input_mode: bool,
     icon: HICON,
-    default_icon_path: String,
+    /// Default logo loaded once at logo size; invalid if none.
+    logo: HICON,
+    light: bool,
     // Rendering (per-pixel alpha surface for UpdateLayeredWindow)
     scale: f32,
     width: i32,
@@ -635,6 +637,7 @@ unsafe fn measure_layout(dc: HDC, scale: f32, width: i32, message: &str) -> Layo
     Layout { header_y, title_y, status_y, message_y, message_h, path_y, height }
 }
 
+#[allow(clippy::too_many_arguments)] // call sites read better with font args inline than via a struct
 unsafe fn draw_text(dc: HDC, text: &str, rect: RECT, size: i32, weight: i32, family: &str, color: u32, flags: DRAW_TEXT_FORMAT) {
     if text.is_empty() {
         return;
@@ -652,13 +655,12 @@ unsafe fn draw_text(dc: HDC, text: &str, rect: RECT, size: i32, weight: i32, fam
 
 /// Paint the whole card into the DIB, then push it to the layered window.
 unsafe fn render(hwnd: HWND) {
-    let (title, status, message, cwd, time, input_mode, icon, default_icon_path,
+    let (title, status, message, cwd, time, input_mode, icon, logo_icon, light,
          scale, w, h, dc, bits, hover, hover_close, alpha) = with_toast(|t| (
         t.title.clone(), t.status.clone(), t.message.clone(), t.cwd.clone(), t.time.clone(),
-        t.input_mode, t.icon, t.default_icon_path.clone(),
+        t.input_mode, t.icon, t.logo, t.light,
         t.scale, t.width, t.height, t.mem_dc, t.bits, t.mouse_inside, t.hover_close, t.alpha,
     ));
-    let light = system_uses_light_theme();
     let theme = if light { &LIGHT } else { &DARK };
     let s = |v: i32| (v as f32 * scale).round() as i32;
     let sf = |v: f32| v * scale;
@@ -702,17 +704,8 @@ unsafe fn render(hwnd: HWND) {
     let logo_x = s(PAD);
     let logo_y = layout.header_y + s(2);
     let logo = s(LOGO_SIZE);
-    let mut drawn = false;
-    if !default_icon_path.is_empty() {
-        let path_wide = crate::util::encode_wide(&default_icon_path);
-        if let Ok(handle) = LoadImageW(None, PCWSTR(path_wide.as_ptr()), IMAGE_ICON, logo, logo, LR_LOADFROMFILE) {
-            let h_icon = HICON(handle.0);
-            if !h_icon.is_invalid() {
-                drawn = DrawIconEx(dc, logo_x, logo_y, h_icon, logo, logo, 0, None, DI_NORMAL).is_ok();
-                let _ = DestroyIcon(h_icon);
-            }
-        }
-    }
+    let drawn = !logo_icon.is_invalid()
+        && DrawIconEx(dc, logo_x, logo_y, logo_icon, logo, logo, 0, None, DI_NORMAL).is_ok();
     if !drawn && !icon.is_invalid() {
         let _ = DrawIconEx(dc, logo_x, logo_y, icon, logo, logo, 0, None, DI_NORMAL);
     }
@@ -856,6 +849,10 @@ pub fn show_toast(params: ToastParams) {
         return;
     }
 
+    // Loaded once here: render() runs on every hover change.
+    let light = system_uses_light_theme();
+    let logo = load_logo(&params.default_icon_path, px(LOGO_SIZE, scale));
+
     TOAST.with(|cell| {
         *cell.borrow_mut() = Some(ToastState {
             hwnd: HWND::default(),
@@ -866,7 +863,8 @@ pub fn show_toast(params: ToastParams) {
             time,
             input_mode: params.input_mode,
             icon: params.icon,
-            default_icon_path: params.default_icon_path,
+            logo,
+            light,
             scale,
             width,
             height,
@@ -942,6 +940,21 @@ pub fn show_toast(params: ToastParams) {
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+    }
+    if !logo.is_invalid() {
+        unsafe { let _ = DestroyIcon(logo); }
+    }
+}
+
+fn load_logo(path: &str, size: i32) -> HICON {
+    if path.is_empty() {
+        return HICON::default();
+    }
+    let path_wide = crate::util::encode_wide(path);
+    unsafe {
+        LoadImageW(None, PCWSTR(path_wide.as_ptr()), IMAGE_ICON, size, size, LR_LOADFROMFILE)
+            .map(|h| HICON(h.0))
+            .unwrap_or_default()
     }
 }
 
