@@ -97,6 +97,7 @@ fn run_notify_mode(debug: bool) -> i32 {
     debug_log!("Notify mode, session: {}", session_id);
 
     let mut cmd = format!("\"{}\" --notify-show --session \"{}\"", exe_path(), session_id);
+    push_cwd_arg(&mut cmd, &input);
     if debug {
         cmd.push_str(" --debug");
     }
@@ -137,24 +138,24 @@ fn run_input_mode(debug: bool) -> i32 {
         // Claude is proactively asking the user a question (with options UI).
         let q = json::extract_first_question(&input);
         let msg = if q.is_empty() {
-            "Claude is asking you a question".to_string()
+            "Claude 有問題要問你".to_string()
         } else {
             q
         };
-        ("Claude is Asking".to_string(), msg)
+        ("有問題要問你".to_string(), msg)
     } else if tool_name == "ExitPlanMode" {
         // Plan mode: Claude finished planning and wants user approval.
-        ("Plan Ready for Approval".to_string(), "Claude proposes a plan — review and approve".to_string())
+        ("計畫待確認".to_string(), "Claude 擬好計畫了，請檢查後核准".to_string())
     } else {
         let msg = json::extract_string(&input, "message");
         let title = match notification_type.as_str() {
-            "permission_prompt" => "Permission Required",
-            "idle_prompt" => "Claude is Waiting",
-            "elicitation_dialog" => "MCP Asks",
-            _ => "Input Required",
+            "permission_prompt" => "需要授權",
+            "idle_prompt" => "等你回覆",
+            "elicitation_dialog" => "MCP 詢問",
+            _ => "需要你輸入",
         };
         let msg = if msg.is_empty() {
-            "Claude needs your input".to_string()
+            "Claude 需要你的輸入".to_string()
         } else {
             msg
         };
@@ -176,6 +177,7 @@ fn run_input_mode(debug: bool) -> i32 {
     cmd.push_str(&format!(" --message \"{}\"", escaped_msg));
     let escaped_title = title.replace('"', "\\\"");
     cmd.push_str(&format!(" --title \"{}\"", escaped_title));
+    push_cwd_arg(&mut cmd, &input);
     if debug {
         cmd.push_str(" --debug");
     }
@@ -210,57 +212,47 @@ fn run_notify_show_mode(args: &cli::Args) -> i32 {
         st.target_hwnd, st.wt_runtime_id, st.icon_path, st.user_prompt);
 
     // 2. Determine notification content (SPEC 14.1-14.2)
-    let (title, message) = if args.input_mode {
+    // Title = project folder, status line = what happened, message = detail / your prompt.
+    let (status, message) = if args.input_mode {
         let msg = if !args.message.is_empty() {
             args.message.clone()
         } else {
-            "Claude needs your input".to_string()
+            "Claude 需要你的輸入".to_string()
         };
-        let title = if !args.title.is_empty() {
+        let status = if !args.title.is_empty() {
             args.title.clone()
         } else {
-            "Input Required".to_string()
+            "需要你輸入".to_string()
         };
-        (title, msg)
+        (status, msg)
     } else {
-        let msg = if !st.user_prompt.is_empty() {
-            st.user_prompt.clone()
-        } else {
-            "Task completed".to_string()
-        };
-        ("Claude Code".to_string(), msg)
+        ("已完成".to_string(), st.user_prompt.clone())
     };
+    let folder = cwd_folder(&args.cwd);
+    let title = if folder.is_empty() { "Claude Code".to_string() } else { folder };
 
     // 3. Sanitize message (SPEC 14.3)
     let message = sanitize_message(&message);
-    debug_log!("Title: {}, Message: {}", title, message);
+    debug_log!("Title: {}, Status: {}, Message: {}", title, status, message);
 
     // 4. Discover assets
     let discovered = assets::discover_assets();
-    debug_log!("Sound: {:?}, Font: {:?}, Icon: {:?}",
-        discovered.sound_file, discovered.font_file, discovered.default_icon_path);
+    debug_log!("Sound: {:?}, Icon: {:?}", discovered.sound_file, discovered.default_icon_path);
 
     // 5. Extract icon from saved exe path
     let icon = assets::extract_icon(&st.icon_path);
     debug_log!("App icon: {:?}", icon);
 
-    // 6. Load custom font
-    let font_family = if let Some(ref font_path) = discovered.font_file {
-        assets::load_font(font_path).unwrap_or_else(|| "Segoe UI".to_string())
-    } else {
-        "Segoe UI".to_string()
-    };
-    debug_log!("Font family: {}", font_family);
-
-    // 7. Play sound
+    // 6. Play sound
     assets::play_sound(&discovered.sound_file);
 
-    // 8. Show toast (blocks until closed)
+    // 7. Show toast (blocks until closed)
     toast::show_toast(toast::ToastParams {
         title,
+        status,
         message,
+        cwd: args.cwd.clone(),
         input_mode: args.input_mode,
-        font_family,
         icon,
         default_icon_path: discovered.default_icon_path.unwrap_or_default(),
         target_hwnd: st.target_hwnd,
@@ -268,28 +260,39 @@ fn run_notify_show_mode(args: &cli::Args) -> i32 {
         wt_runtime_id: st.wt_runtime_id,
     });
 
-    // 9. Cleanup
+    // 8. Cleanup
     if !icon.is_invalid() {
         unsafe { let _ = windows::Win32::UI::WindowsAndMessaging::DestroyIcon(icon); }
-    }
-    if let Some(ref font_path) = discovered.font_file {
-        assets::unload_font(font_path);
     }
 
     0
 }
 
-fn sanitize_message(msg: &str) -> String {
-    // Replace newlines with space
-    let mut s: String = msg.chars().map(|c| {
-        if c == '\n' || c == '\r' { ' ' } else { c }
-    }).collect();
-
-    // Truncate at 35 chars + "..."
-    if s.chars().count() > 35 {
-        s = s.chars().take(35).collect::<String>() + "...";
+/// Forward the hook's `cwd` to the display process.
+fn push_cwd_arg(cmd: &mut String, input: &str) {
+    let cwd = json::extract_string(input, "cwd");
+    // Trailing backslash would escape the closing quote on the command line.
+    let cwd = cwd.trim_end_matches(['\\', '/']);
+    if !cwd.is_empty() {
+        cmd.push_str(&format!(" --cwd \"{}\"", cwd.replace('"', "\\\"")));
     }
-    s
+}
+
+/// Last path component, e.g. "D:\\0-icsc_project" -> "0-icsc_project".
+fn cwd_folder(cwd: &str) -> String {
+    let cwd = cwd.trim_end_matches(['\\', '/']);
+    cwd.rsplit(['\\', '/']).next().unwrap_or("").to_string()
+}
+
+fn sanitize_message(msg: &str) -> String {
+    // Collapse whitespace runs (incl. newlines) to single spaces.
+    let s = msg.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Hard cap only; the toast itself ellipsizes to two lines.
+    if s.chars().count() > 300 {
+        s.chars().take(300).collect::<String>() + "…"
+    } else {
+        s
+    }
 }
 
 fn main() {

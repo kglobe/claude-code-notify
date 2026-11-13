@@ -15,29 +15,60 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 // --- Constants (SPEC Sections 8.2, 8.3, 10.1, 10.2) ---
 
-const WINDOW_WIDTH: i32 = 300;
-const WINDOW_HEIGHT: i32 = 80;
-const ICON_SIZE: i32 = 48;
-const ICON_PADDING: i32 = 16;
-const CLOSE_BUTTON_SIZE: i32 = 20;
-const CLOSE_BUTTON_MARGIN: i32 = 6;
-const BORDER_WIDTH: i32 = 2;
+// Layout in logical px (96 DPI); scaled per monitor at runtime.
+const WINDOW_WIDTH: i32 = 380;
+const PAD: i32 = 16;
+const RADIUS: f32 = 8.0;
+const LOGO_SIZE: i32 = 16;
+const BADGE_SIZE: i32 = 22;
+const TEXT_LEFT: i32 = PAD + BADGE_SIZE + 12;
+const CLOSE_BUTTON_SIZE: i32 = 28;
+const CLOSE_BUTTON_MARGIN: i32 = 8;
+const STACK_GAP: i32 = 8;
+const EDGE_MARGIN: i32 = 12;
+/// Transparent band around the card that holds the drop shadow.
+const SHADOW: i32 = 12;
 
-const COLOR_BG: u32 = 0x00333333;
-const COLOR_BORDER_NORMAL: u32 = 0x004B64B2;
-const COLOR_BORDER_INPUT: u32 = 0x0000CFCF;
-const COLOR_TITLE: u32 = 0x00FFFFFF;
-const COLOR_MESSAGE: u32 = 0x00CCCCCC;
-const COLOR_CLOSE: u32 = 0x00888888;
+fn px(v: i32, scale: f32) -> i32 {
+    (v as f32 * scale).round() as i32
+}
+
+/// Gap between stacked windows; negative because the shadow bands overlap.
+fn stack_gap(scale: f32) -> i32 {
+    px(STACK_GAP, scale) - 2 * px(SHADOW, scale)
+}
+
+/// Fluent-style palette (0xRRGGBB), picked to keep body text >= 4.5:1 contrast.
+struct Theme {
+    bg: u32,
+    bg_hover: u32,
+    border: u32,
+    title: u32,
+    body: u32,
+    muted: u32,
+    ok: u32,
+    warn: u32,
+    on_badge: u32,
+    close_hover: u32,
+}
+
+const LIGHT: Theme = Theme {
+    bg: 0xFBFBFB, bg_hover: 0xF5F5F5, border: 0xDDDDDD, title: 0x1B1B1B, body: 0x3D3D3D,
+    muted: 0x6B6B6B, ok: 0x0F7B0F, warn: 0x9D5D00, on_badge: 0xFFFFFF, close_hover: 0xE6E6E6,
+};
+const DARK: Theme = Theme {
+    bg: 0x2B2B2B, bg_hover: 0x323232, border: 0x454545, title: 0xFFFFFF, body: 0xDADADA,
+    muted: 0xA8A8A8, ok: 0x6CCB5F, warn: 0xFCE100, on_badge: 0x1B1B1B, close_hover: 0x3D3D3D,
+};
 
 const TIMER_FADE: usize = 1;
 const TIMER_START_FADE: usize = 2;
 const TIMER_REPOSITION: usize = 3;
 const TIMER_CHECK_BOTTOM: usize = 4;
 
-const DISPLAY_MS: u32 = 3000;
-const FADE_MS: u32 = 1000;
-const INITIAL_ALPHA: u8 = 230;
+const DISPLAY_MS: u32 = 6000;
+const FADE_MS: u32 = 600;
+const INITIAL_ALPHA: u8 = 255;
 
 const TOAST_CLASS_NAME: &str = "ClaudeCodeToast";
 
@@ -50,11 +81,20 @@ const WM_MOUSELEAVE: u32 = 0x02A3;
 struct ToastState {
     hwnd: HWND,
     title: String,
+    status: String,
     message: String,
+    cwd: String,
+    time: String,
     input_mode: bool,
-    font_family: String,
     icon: HICON,
     default_icon_path: String,
+    // Rendering (per-pixel alpha surface for UpdateLayeredWindow)
+    scale: f32,
+    width: i32,
+    height: i32,
+    mem_dc: HDC,
+    bits: *mut u32,
+    hover_close: bool,
     // Activation targets
     target_hwnd: HWND,
     wt_hwnd: HWND,
@@ -93,28 +133,68 @@ fn with_toast_mut<R>(f: impl FnOnce(&mut ToastState) -> R) -> R {
     })
 }
 
-fn make_font(height: i32, bold: bool, family: &str) -> HFONT {
+fn make_font(height: i32, weight: i32, family: &str) -> HFONT {
     let face = crate::util::encode_wide(family);
     unsafe {
         CreateFontW(
-            height, 0, 0, 0,
-            if bold { FW_BOLD.0 as i32 } else { FW_NORMAL.0 as i32 },
+            -height, 0, 0, 0, // negative = character height, matches CSS px
+            weight,
             0, 0, 0,
-            FONT_CHARSET(0),
+            FONT_CHARSET(1), // DEFAULT_CHARSET so CJK font linking kicks in
             FONT_OUTPUT_PRECISION(0),
             FONT_CLIP_PRECISION(0),
-            FONT_QUALITY(0),
+            ANTIALIASED_QUALITY, // grayscale: no colour fringes on the tinted card
             0,
             PCWSTR(face.as_ptr()),
         )
     }
 }
 
+/// Close button rect in device px, relative to the card (not the window).
+fn close_rect(width: i32, scale: f32) -> RECT {
+    let s = |v: i32| (v as f32 * scale).round() as i32;
+    let left = width - s(CLOSE_BUTTON_MARGIN + CLOSE_BUTTON_SIZE);
+    let top = s(CLOSE_BUTTON_MARGIN);
+    RECT { left, top, right: left + s(CLOSE_BUTTON_SIZE), bottom: top + s(CLOSE_BUTTON_SIZE) }
+}
+
 fn is_point_in_close_button(x: i32, y: i32) -> bool {
-    let btn_left = WINDOW_WIDTH - CLOSE_BUTTON_MARGIN - CLOSE_BUTTON_SIZE;
-    let btn_top = CLOSE_BUTTON_MARGIN;
-    x >= btn_left && x <= btn_left + CLOSE_BUTTON_SIZE
-        && y >= btn_top && y <= btn_top + CLOSE_BUTTON_SIZE
+    let (r, o) = with_toast(|t| {
+        let o = px(SHADOW, t.scale);
+        (close_rect(t.width - 2 * o, t.scale), o)
+    });
+    let (x, y) = (x - o, y - o);
+    x >= r.left && x < r.right && y >= r.top && y < r.bottom
+}
+
+/// Re-apply the window's per-pixel surface with a new overall alpha.
+fn set_alpha(hwnd: HWND, alpha: u8) {
+    let blend = BLENDFUNCTION {
+        BlendOp: AC_SRC_OVER as u8,
+        BlendFlags: 0,
+        SourceConstantAlpha: alpha,
+        AlphaFormat: AC_SRC_ALPHA as u8,
+    };
+    unsafe {
+        let _ = UpdateLayeredWindow(hwnd, None, None, None, None, None, COLORREF(0), Some(&blend), ULW_ALPHA);
+    }
+}
+
+fn system_uses_light_theme() -> bool {
+    let mut value: u32 = 1;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    unsafe {
+        let _ = windows::Win32::System::Registry::RegGetValueW(
+            windows::Win32::System::Registry::HKEY_CURRENT_USER,
+            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
+            w!("AppsUseLightTheme"),
+            windows::Win32::System::Registry::RRF_RT_REG_DWORD,
+            None,
+            Some(&mut value as *mut u32 as *mut _),
+            Some(&mut size),
+        );
+    }
+    value != 0
 }
 
 // --- Stacking helpers ---
@@ -156,33 +236,33 @@ fn enum_other_toasts() -> Vec<ToastInfo> {
     toasts
 }
 
-fn calculate_position(work_area: &RECT, taskbar_edge: u32) -> (i32, i32) {
+fn calculate_position(work_area: &RECT, taskbar_edge: u32, width: i32, height: i32, margin: i32, gap: i32) -> (i32, i32) {
     let other_toasts = enum_other_toasts();
 
-    // X position
+    // X position (margin keeps the card off the screen edge, like system toasts)
     let x = if taskbar_edge == ABE_LEFT as u32 {
-        work_area.left
+        work_area.left + margin
     } else {
-        work_area.right - WINDOW_WIDTH
+        work_area.right - width - margin
     };
 
     // Y position
     let y = if other_toasts.is_empty() {
         // First toast
         if taskbar_edge == ABE_TOP as u32 {
-            work_area.top
+            work_area.top + margin
         } else {
-            work_area.bottom - WINDOW_HEIGHT
+            work_area.bottom - height - margin
         }
     } else {
         if taskbar_edge == ABE_TOP as u32 {
             // Stack below: find lowest bottom
             let lowest_bottom = other_toasts.iter().map(|t| t.rect.bottom).max().unwrap_or(work_area.top);
-            lowest_bottom
+            lowest_bottom + gap
         } else {
             // Stack above: find highest top
             let highest_top = other_toasts.iter().map(|t| t.rect.top).min().unwrap_or(work_area.bottom);
-            highest_top - WINDOW_HEIGHT
+            highest_top - height - gap
         }
     };
 
@@ -215,7 +295,7 @@ fn notify_other_toasts_closing(my_hwnd: HWND) {
                 t.hwnd,
                 WM_TOAST_CHECK_POSITION,
                 Some(WPARAM(my_rect.top as usize)),
-                Some(LPARAM(0)),
+                Some(LPARAM((my_rect.bottom - my_rect.top) as isize)),
             );
         }
     }
@@ -300,11 +380,6 @@ unsafe extern "system" fn wnd_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
-        WM_PAINT => {
-            paint(hwnd);
-            LRESULT(0)
-        }
-
         WM_TIMER => {
             match wparam.0 {
                 TIMER_START_FADE => {
@@ -316,7 +391,7 @@ unsafe extern "system" fn wnd_proc(
                     let should_destroy = with_toast_mut(|state| {
                         if state.alpha > state.fade_step {
                             state.alpha -= state.fade_step;
-                            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), state.alpha, LWA_ALPHA);
+                            set_alpha(hwnd, state.alpha);
                             false
                         } else {
                             state.is_fading = false;
@@ -400,11 +475,26 @@ unsafe extern "system" fn wnd_proc(
                 // Pause all toasts
                 notify_all_toasts_pause_timer(true);
             }
+            let x = (lparam.0 & 0xFFFF) as i16 as i32;
+            let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
+            let over_close = is_point_in_close_button(x, y);
+            let changed = with_toast_mut(|state| {
+                let changed = !was_inside || state.hover_close != over_close;
+                state.hover_close = over_close;
+                changed
+            });
+            if changed {
+                render(hwnd);
+            }
             LRESULT(0)
         }
 
         WM_MOUSELEAVE => {
-            with_toast_mut(|state| state.mouse_inside = false);
+            with_toast_mut(|state| {
+                state.mouse_inside = false;
+                state.hover_close = false;
+            });
+            render(hwnd);
             // Resume all toasts
             notify_all_toasts_pause_timer(false);
             LRESULT(0)
@@ -418,17 +508,19 @@ unsafe extern "system" fn wnd_proc(
             let taskbar_edge = with_toast(|s| s.taskbar_edge);
 
             // Update position target (borrow released before is_bottom_toast_check)
+            let closed_height = lparam.0 as i32;
             with_toast_mut(|state| {
+                let shift = closed_height + stack_gap(state.scale);
                 if state.taskbar_edge == ABE_TOP as u32 {
                     // Top taskbar: if we're below the closed toast, move up
                     if my_rect.top > closed_toast_y {
-                        state.target_y = my_rect.top - WINDOW_HEIGHT;
+                        state.target_y = my_rect.top - shift;
                         SetTimer(Some(hwnd), TIMER_REPOSITION, 16, None);
                     }
                 } else {
                     // Bottom taskbar: if we're above the closed toast, move down
                     if my_rect.top < closed_toast_y {
-                        state.target_y = my_rect.top + WINDOW_HEIGHT;
+                        state.target_y = my_rect.top + shift;
                         SetTimer(Some(hwnd), TIMER_REPOSITION, 16, None);
                     }
                 }
@@ -459,7 +551,7 @@ unsafe extern "system" fn wnd_proc(
                         let _ = KillTimer(Some(hwnd), TIMER_FADE);
                         state.is_fading = false;
                         state.alpha = INITIAL_ALPHA;
-                        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), INITIAL_ALPHA, LWA_ALPHA);
+                        set_alpha(hwnd, INITIAL_ALPHA);
                     }
                     let _ = KillTimer(Some(hwnd), TIMER_START_FADE);
                 } else {
@@ -481,130 +573,227 @@ unsafe extern "system" fn wnd_proc(
     }
 }
 
-// --- Paint ---
+// --- Render ---
 
-unsafe fn paint(hwnd: HWND) {
-    let (title, message, input_mode, font_family, icon, default_icon_path) = with_toast(|state| {
-        (
-            state.title.clone(),
-            state.message.clone(),
-            state.input_mode,
-            state.font_family.clone(),
-            state.icon,
-            state.default_icon_path.clone(),
-        )
-    });
+fn cref(rgb: u32) -> COLORREF {
+    COLORREF(((rgb & 0xFF) << 16) | (rgb & 0xFF00) | ((rgb >> 16) & 0xFF))
+}
 
-    let mut ps = PAINTSTRUCT::default();
-    let hdc = BeginPaint(hwnd, &mut ps);
+fn lerp_rgb(a: u32, b: u32, t: f32) -> u32 {
+    let ch = |s: u32| {
+        let x = ((a >> s) & 0xFF) as f32;
+        let y = ((b >> s) & 0xFF) as f32;
+        ((x + (y - x) * t).round() as u32) << s
+    };
+    ch(16) | ch(8) | ch(0)
+}
 
-    // Background
-    let bg = CreateSolidBrush(COLORREF(COLOR_BG));
-    let rect = RECT { left: 0, top: 0, right: WINDOW_WIDTH, bottom: WINDOW_HEIGHT };
-    FillRect(hdc, &rect, bg);
-    let _ = DeleteObject(HGDIOBJ(bg.0));
+/// Signed distance from a pixel center to a rounded box (negative = inside).
+fn sdf_rrect(px: f32, py: f32, cx: f32, cy: f32, hw: f32, hh: f32, r: f32) -> f32 {
+    let qx = (px - cx).abs() - (hw - r);
+    let qy = (py - cy).abs() - (hh - r);
+    let ox = qx.max(0.0);
+    let oy = qy.max(0.0);
+    (ox * ox + oy * oy).sqrt() + qx.max(qy).min(0.0) - r
+}
 
-    // Border (color depends on input mode)
-    let border_color = if input_mode { COLOR_BORDER_INPUT } else { COLOR_BORDER_NORMAL };
-    let border = CreateSolidBrush(COLORREF(border_color));
-    let borders = [
-        RECT { left: 0, top: 0, right: WINDOW_WIDTH, bottom: BORDER_WIDTH },
-        RECT { left: 0, top: WINDOW_HEIGHT - BORDER_WIDTH, right: WINDOW_WIDTH, bottom: WINDOW_HEIGHT },
-        RECT { left: 0, top: 0, right: BORDER_WIDTH, bottom: WINDOW_HEIGHT },
-        RECT { left: WINDOW_WIDTH - BORDER_WIDTH, top: 0, right: WINDOW_WIDTH, bottom: WINDOW_HEIGHT },
-    ];
-    for b in &borders {
-        FillRect(hdc, b, border);
+fn coverage(d: f32) -> f32 {
+    (0.5 - d).clamp(0.0, 1.0)
+}
+
+/// Vertical layout in device px, derived from logical constants and message length.
+struct Layout {
+    header_y: i32,
+    title_y: i32,
+    status_y: i32,
+    message_y: i32,
+    message_h: i32,
+    path_y: i32,
+    height: i32,
+}
+
+unsafe fn measure_layout(dc: HDC, scale: f32, width: i32, message: &str) -> Layout {
+    let s = |v: i32| (v as f32 * scale).round() as i32;
+    let header_y = s(12);
+    let title_y = s(38);
+    let status_y = s(64);
+    let message_y = s(86);
+
+    let mut message_h = 0;
+    if !message.is_empty() {
+        let font = make_font(s(14), 400, "Segoe UI");
+        let old = SelectObject(dc, HGDIOBJ(font.0));
+        let mut r = RECT { left: 0, top: 0, right: width - s(TEXT_LEFT) - s(PAD), bottom: 0 };
+        let mut buf = crate::util::encode_wide(message);
+        let len = buf.len() - 1;
+        DrawTextW(dc, &mut buf[..len], &mut r, DT_CALCRECT | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX);
+        SelectObject(dc, old);
+        let _ = DeleteObject(HGDIOBJ(font.0));
+        message_h = r.bottom.min(s(40)).max(s(20)); // 1-2 lines
     }
-    let _ = DeleteObject(HGDIOBJ(border.0));
 
-    // Icon
-    let icon_x = ICON_PADDING;
-    let icon_y = (WINDOW_HEIGHT - ICON_SIZE) / 2;
-    if !icon.is_invalid() {
-        let _ = DrawIconEx(
-            hdc, icon_x, icon_y,
-            icon,
-            ICON_SIZE, ICON_SIZE,
-            0, None, DI_NORMAL,
-        );
-    } else if !default_icon_path.is_empty() {
+    let path_y = if message_h > 0 { message_y + message_h + s(6) } else { message_y };
+    let height = path_y + s(16) + s(14);
+    Layout { header_y, title_y, status_y, message_y, message_h, path_y, height }
+}
+
+unsafe fn draw_text(dc: HDC, text: &str, rect: RECT, size: i32, weight: i32, family: &str, color: u32, flags: DRAW_TEXT_FORMAT) {
+    if text.is_empty() {
+        return;
+    }
+    let font = make_font(size, weight, family);
+    let old = SelectObject(dc, HGDIOBJ(font.0));
+    SetTextColor(dc, cref(color));
+    let mut r = rect;
+    let mut buf = crate::util::encode_wide(text);
+    let len = buf.len() - 1;
+    DrawTextW(dc, &mut buf[..len], &mut r, flags | DT_NOPREFIX);
+    SelectObject(dc, old);
+    let _ = DeleteObject(HGDIOBJ(font.0));
+}
+
+/// Paint the whole card into the DIB, then push it to the layered window.
+unsafe fn render(hwnd: HWND) {
+    let (title, status, message, cwd, time, input_mode, icon, default_icon_path,
+         scale, w, h, dc, bits, hover, hover_close, alpha) = with_toast(|t| (
+        t.title.clone(), t.status.clone(), t.message.clone(), t.cwd.clone(), t.time.clone(),
+        t.input_mode, t.icon, t.default_icon_path.clone(),
+        t.scale, t.width, t.height, t.mem_dc, t.bits, t.mouse_inside, t.hover_close, t.alpha,
+    ));
+    let light = system_uses_light_theme();
+    let theme = if light { &LIGHT } else { &DARK };
+    let s = |v: i32| (v as f32 * scale).round() as i32;
+    let sf = |v: f32| v * scale;
+    // Card sits inside the shadow band; GDI draws in card coords via the viewport origin.
+    let o = s(SHADOW);
+    let (cw, ch) = (w - 2 * o, h - 2 * o);
+    let layout = measure_layout(dc, scale, cw, &message);
+    let accent = if input_mode { theme.warn } else { theme.ok };
+
+    // Pass 1: shapes (background, hairline border, status badge, close hover), anti-aliased via SDF.
+    let px = std::slice::from_raw_parts_mut(bits, (w * h) as usize);
+    let (cx, cy, hw, hh) = (w as f32 / 2.0, h as f32 / 2.0, cw as f32 / 2.0, ch as f32 / 2.0);
+    let r = sf(RADIUS);
+    let bw = sf(1.0).max(1.0);
+    let of = o as f32;
+    let badge_r = sf(BADGE_SIZE as f32) / 2.0;
+    let badge_cx = (s(PAD) as f32) + badge_r;
+    let badge_cy = (layout.title_y + s(13)) as f32;
+    let close = close_rect(cw, scale);
+    let bg = if hover { theme.bg_hover } else { theme.bg };
+    for y in 0..h {
+        for x in 0..w {
+            let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+            let d = sdf_rrect(fx, fy, cx, cy, hw, hh, r);
+            let mut c = lerp_rgb(bg, theme.border, coverage(-(d + bw)));
+            let db = ((fx - of - badge_cx).powi(2) + (fy - of - badge_cy).powi(2)).sqrt() - badge_r;
+            c = lerp_rgb(c, accent, coverage(db));
+            if hover_close {
+                let dc_ = sdf_rrect(fx - of, fy - of,
+                    (close.left + close.right) as f32 / 2.0, (close.top + close.bottom) as f32 / 2.0,
+                    (close.right - close.left) as f32 / 2.0, (close.bottom - close.top) as f32 / 2.0, sf(4.0));
+                c = lerp_rgb(c, theme.close_hover, coverage(dc_));
+            }
+            px[(y * w + x) as usize] = c;
+        }
+    }
+
+    // Pass 2: GDI content on top of the opaque card.
+    SetBkMode(dc, TRANSPARENT);
+    let _ = SetViewportOrgEx(dc, o, o, None);
+    let logo_x = s(PAD);
+    let logo_y = layout.header_y + s(2);
+    let logo = s(LOGO_SIZE);
+    let mut drawn = false;
+    if !default_icon_path.is_empty() {
         let path_wide = crate::util::encode_wide(&default_icon_path);
-        let result = LoadImageW(
-            None,
-            PCWSTR(path_wide.as_ptr()),
-            IMAGE_ICON,
-            ICON_SIZE, ICON_SIZE,
-            LR_LOADFROMFILE,
-        );
-        if let Ok(handle) = result {
+        if let Ok(handle) = LoadImageW(None, PCWSTR(path_wide.as_ptr()), IMAGE_ICON, logo, logo, LR_LOADFROMFILE) {
             let h_icon = HICON(handle.0);
             if !h_icon.is_invalid() {
-                let _ = DrawIconEx(hdc, icon_x, icon_y, h_icon, ICON_SIZE, ICON_SIZE, 0, None, DI_NORMAL);
+                drawn = DrawIconEx(dc, logo_x, logo_y, h_icon, logo, logo, 0, None, DI_NORMAL).is_ok();
                 let _ = DestroyIcon(h_icon);
             }
         }
     }
+    if !drawn && !icon.is_invalid() {
+        let _ = DrawIconEx(dc, logo_x, logo_y, icon, logo, logo, 0, None, DI_NORMAL);
+    }
 
-    // Text setup
-    SetBkMode(hdc, TRANSPARENT);
+    let header = RECT { left: logo_x + logo + s(8), top: layout.header_y, right: close.left - s(4), bottom: layout.header_y + s(20) };
+    draw_text(dc, "Claude Code", header, s(12), 600, "Segoe UI", theme.muted, DT_SINGLELINE | DT_VCENTER);
+    draw_text(dc, &time, header, s(12), 400, "Segoe UI", theme.muted, DT_SINGLELINE | DT_VCENTER | DT_RIGHT);
 
-    let text_left = icon_x + ICON_SIZE + ICON_PADDING;
+    // Close glyph (Fluent "ChromeClose")
+    draw_text(dc, "\u{E8BB}", close, s(10), 400, "Segoe Fluent Icons",
+        if hover_close { theme.title } else { theme.muted }, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
 
-    // Title
-    SetTextColor(hdc, COLORREF(COLOR_TITLE));
-    let title_font = make_font(18, true, &font_family);
-    let old = SelectObject(hdc, HGDIOBJ(title_font.0));
-    let mut title_rect = RECT { left: text_left, top: 15, right: WINDOW_WIDTH - 10, bottom: 40 };
-    let mut title_buf = crate::util::encode_wide(&title);
-    let title_len = title_buf.len() - 1; // exclude null terminator
-    DrawTextW(hdc, &mut title_buf[..title_len], &mut title_rect, DRAW_TEXT_FORMAT(0));
-    SelectObject(hdc, old);
-    let _ = DeleteObject(HGDIOBJ(title_font.0));
-
-    // Message
-    SetTextColor(hdc, COLORREF(COLOR_MESSAGE));
-    let msg_font = make_font(14, false, &font_family);
-    let old = SelectObject(hdc, HGDIOBJ(msg_font.0));
-    let mut msg_rect = RECT { left: text_left, top: 42, right: WINDOW_WIDTH - 10, bottom: WINDOW_HEIGHT - 10 };
-    let mut msg_buf = crate::util::encode_wide(&message);
-    let msg_len = msg_buf.len() - 1; // exclude null terminator
-    DrawTextW(hdc, &mut msg_buf[..msg_len], &mut msg_rect, DRAW_TEXT_FORMAT(0));
-    SelectObject(hdc, old);
-    let _ = DeleteObject(HGDIOBJ(msg_font.0));
-
-    // Close button (always Segoe UI)
-    SetTextColor(hdc, COLORREF(COLOR_CLOSE));
-    let close_font = make_font(16, true, "Segoe UI");
-    let old = SelectObject(hdc, HGDIOBJ(close_font.0));
-    let btn_left = WINDOW_WIDTH - CLOSE_BUTTON_MARGIN - CLOSE_BUTTON_SIZE;
-    let mut close_rect = RECT {
-        left: btn_left,
-        top: CLOSE_BUTTON_MARGIN,
-        right: btn_left + CLOSE_BUTTON_SIZE,
-        bottom: CLOSE_BUTTON_MARGIN + CLOSE_BUTTON_SIZE,
+    // Badge glyph: check mark for done, exclamation for needs-input
+    let badge = RECT {
+        left: (badge_cx - badge_r) as i32, top: (badge_cy - badge_r) as i32,
+        right: (badge_cx + badge_r).ceil() as i32, bottom: (badge_cy + badge_r).ceil() as i32,
     };
-    let mut close_buf = crate::util::encode_wide("\u{00D7}");
-    let close_len = close_buf.len() - 1;
-    DrawTextW(
-        hdc,
-        &mut close_buf[..close_len],
-        &mut close_rect,
-        DT_CENTER | DT_VCENTER | DT_SINGLELINE,
-    );
-    SelectObject(hdc, old);
-    let _ = DeleteObject(HGDIOBJ(close_font.0));
+    if input_mode {
+        draw_text(dc, "!", badge, s(15), 800, "Segoe UI", theme.on_badge, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+    } else {
+        draw_text(dc, "\u{E73E}", badge, s(12), 700, "Segoe Fluent Icons", theme.on_badge, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+    }
 
-    let _ = EndPaint(hwnd, &ps);
+    let text_left = s(TEXT_LEFT);
+    let text_right = cw - s(PAD);
+    draw_text(dc, &title, RECT { left: text_left, top: layout.title_y, right: text_right, bottom: layout.title_y + s(26) },
+        s(17), 600, "Segoe UI", theme.title, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+    draw_text(dc, &status, RECT { left: text_left, top: layout.status_y, right: text_right, bottom: layout.status_y + s(20) },
+        s(13), 600, "Segoe UI", accent, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+    if layout.message_h > 0 {
+        draw_text(dc, &message,
+            RECT { left: text_left, top: layout.message_y, right: text_right, bottom: layout.message_y + layout.message_h },
+            s(14), 400, "Segoe UI", theme.body, DT_WORDBREAK | DT_EDITCONTROL | DT_END_ELLIPSIS);
+    }
+    draw_text(dc, &cwd, RECT { left: text_left, top: layout.path_y, right: text_right, bottom: layout.path_y + s(16) },
+        s(12), 400, "Segoe UI", theme.muted, DT_SINGLELINE | DT_VCENTER | DT_PATH_ELLIPSIS);
+
+    let _ = SetViewportOrgEx(dc, 0, 0, None);
+
+    // Pass 3: card alpha mask over a soft black drop shadow, premultiplied (GDI zeroes alpha, so set it last).
+    let _ = GdiFlush();
+    let (peak, blur, drop) = (if light { 0.16 } else { 0.45 }, sf(9.0), sf(3.0));
+    for y in 0..h {
+        for x in 0..w {
+            let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+            let a = coverage(sdf_rrect(fx, fy, cx, cy, hw, hh, r));
+            let t = (sdf_rrect(fx, fy - drop, cx, cy, hw, hh, r) / blur).clamp(0.0, 1.0);
+            let sa = peak * (1.0 - t) * (1.0 - t);
+            let i = (y * w + x) as usize;
+            let c = px[i];
+            let pm = |sh: u32| ((((c >> sh) & 0xFF) as f32 * a).round() as u32) << sh;
+            let alpha = a + sa * (1.0 - a);
+            px[i] = (((alpha * 255.0).round() as u32) << 24) | pm(16) | pm(8) | pm(0);
+        }
+    }
+
+    let mut wr = RECT::default();
+    let _ = GetWindowRect(hwnd, &mut wr);
+    let dst = POINT { x: wr.left, y: wr.top };
+    let size = SIZE { cx: w, cy: h };
+    let src = POINT::default();
+    let blend = BLENDFUNCTION {
+        BlendOp: AC_SRC_OVER as u8,
+        BlendFlags: 0,
+        SourceConstantAlpha: alpha,
+        AlphaFormat: AC_SRC_ALPHA as u8,
+    };
+    let _ = UpdateLayeredWindow(hwnd, None, Some(&dst), Some(&size), Some(dc), Some(&src),
+        COLORREF(0), Some(&blend), ULW_ALPHA);
 }
 
 // --- Public API ---
 
 pub struct ToastParams {
     pub title: String,
+    pub status: String,
     pub message: String,
+    pub cwd: String,
     pub input_mode: bool,
-    pub font_family: String,
     pub icon: HICON,
     pub default_icon_path: String,
     pub target_hwnd: HWND,
@@ -614,6 +803,12 @@ pub struct ToastParams {
 
 /// Show the toast notification window. Blocks until the window is closed.
 pub fn show_toast(params: ToastParams) {
+    unsafe {
+        let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
+            windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        );
+    }
+
     // Calculate fade step (SPEC 10.3)
     let fade_ticks = (FADE_MS / 16).max(1);
     let fade_step = ((INITIAL_ALPHA as u32 / fade_ticks) + 1).min(255) as u8;
@@ -622,17 +817,64 @@ pub fn show_toast(params: ToastParams) {
     let taskbar_edge = detect_taskbar_edge();
 
     // Get work area from cursor's monitor
-    let (work_area, _monitor) = get_cursor_monitor_work_area();
+    let (work_area, monitor) = get_cursor_monitor_work_area();
+
+    let scale = unsafe {
+        let (mut dx, mut dy) = (96u32, 96u32);
+        let _ = windows::Win32::UI::HiDpi::GetDpiForMonitor(
+            monitor, windows::Win32::UI::HiDpi::MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
+        dx as f32 / 96.0
+    };
+    // Window = card + shadow band on every side.
+    let shadow = px(SHADOW, scale);
+    let card_w = px(WINDOW_WIDTH, scale);
+    let width = card_w + 2 * shadow;
+    let now = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+    let time = format!("{:02}:{:02}", now.wHour, now.wMinute);
+
+    // Offscreen 32bpp top-down DIB sized to the measured layout.
+    let (mem_dc, bits, height) = unsafe {
+        let dc = CreateCompatibleDC(None);
+        let height = measure_layout(dc, scale, card_w, &params.message).height + 2 * shadow;
+        let bmi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: width,
+                biHeight: -height,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
+        let bmp = CreateDIBSection(Some(dc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0).unwrap_or_default();
+        SelectObject(dc, HGDIOBJ(bmp.0));
+        (dc, bits as *mut u32, height)
+    };
+    if bits.is_null() {
+        crate::debug_log!("CreateDIBSection failed");
+        return;
+    }
 
     TOAST.with(|cell| {
         *cell.borrow_mut() = Some(ToastState {
             hwnd: HWND::default(),
             title: params.title,
+            status: params.status,
             message: params.message,
+            cwd: params.cwd,
+            time,
             input_mode: params.input_mode,
-            font_family: params.font_family,
             icon: params.icon,
             default_icon_path: params.default_icon_path,
+            scale,
+            width,
+            height,
+            mem_dc,
+            bits,
+            hover_close: false,
             target_hwnd: params.target_hwnd,
             wt_hwnd: params.wt_hwnd,
             wt_runtime_id: params.wt_runtime_id,
@@ -663,14 +905,15 @@ pub fn show_toast(params: ToastParams) {
         // OK if already registered by another toast instance
         let _ = RegisterClassExW(&wc);
 
-        let (x, y) = calculate_position(&work_area, taskbar_edge);
+        let margin = px(EDGE_MARGIN, scale) - shadow;
+        let (x, y) = calculate_position(&work_area, taskbar_edge, width, height, margin, stack_gap(scale));
 
         let hwnd = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE,
             PCWSTR(class_wide.as_ptr()),
             w!("Toast"),
             WS_POPUP,
-            x, y, WINDOW_WIDTH, WINDOW_HEIGHT,
+            x, y, width, height,
             None, None, Some(instance.into()), None,
         ).unwrap_or_default();
 
@@ -681,7 +924,7 @@ pub fn show_toast(params: ToastParams) {
 
         with_toast_mut(|state| state.hwnd = hwnd);
 
-        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), INITIAL_ALPHA, LWA_ALPHA);
+        render(hwnd);
 
         // Determine if bottom toast and start appropriate timer
         if is_bottom_toast_check(hwnd, taskbar_edge) {

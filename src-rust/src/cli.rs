@@ -21,6 +21,7 @@ pub struct Args {
     pub session: String,
     pub message: String,
     pub title: String,
+    pub cwd: String,
 }
 
 pub fn parse_args() -> Args {
@@ -32,6 +33,7 @@ pub fn parse_args() -> Args {
         session: String::new(),
         message: String::new(),
         title: String::new(),
+        cwd: String::new(),
     };
 
     let mut i = 1;
@@ -60,6 +62,12 @@ pub fn parse_args() -> Args {
                 i += 1;
                 if i < args.len() {
                     result.title = args[i].clone();
+                }
+            }
+            "--cwd" => {
+                i += 1;
+                if i < args.len() {
+                    result.cwd = args[i].clone();
                 }
             }
             _ => {}
