@@ -286,10 +286,11 @@ fn is_bottom(my_top: i32, other_tops: impl IntoIterator<Item = i32>, taskbar_top
 fn notify_other_toasts_closing(my_hwnd: HWND) {
     let mut my_rect = RECT::default();
     unsafe { let _ = GetWindowRect(my_hwnd, &mut my_rect); }
-
     let others = enum_other_toasts();
-    // Post, not Send: a hung toast in another process must not block this one,
-    // and the receiver then sees this toast already destroyed.
+    // Hide before posting: receivers run in other processes and may handle the
+    // message at once, so they must already see this toast gone.
+    unsafe { let _ = ShowWindow(my_hwnd, SW_HIDE); }
+    // Post, not Send: a hung toast in another process must not block this one.
     for t in &others {
         unsafe {
             let _ = PostMessageW(
@@ -299,6 +300,14 @@ fn notify_other_toasts_closing(my_hwnd: HWND) {
                 LPARAM((my_rect.bottom - my_rect.top) as isize),
             );
         }
+    }
+}
+
+fn cursor_over_toast() -> bool {
+    let mut pt = POINT::default();
+    unsafe {
+        GetCursorPos(&mut pt).is_ok()
+            && crate::util::get_class_name(WindowFromPoint(pt)) == TOAST_CLASS_NAME
     }
 }
 
@@ -411,11 +420,14 @@ unsafe extern "system" fn wnd_proc(
                 TIMER_CHECK_BOTTOM => {
                     let taskbar_edge = with_toast(|s| s.taskbar_edge);
                     if is_bottom_toast_check(hwnd, taskbar_edge) {
-                        with_toast_mut(|state| {
+                        let inside = with_toast_mut(|state| {
                             state.is_bottom_toast = true;
+                            state.mouse_inside
                         });
                         let _ = KillTimer(Some(hwnd), TIMER_CHECK_BOTTOM);
-                        SetTimer(Some(hwnd), TIMER_START_FADE, DISPLAY_MS, None);
+                        if !inside {
+                            SetTimer(Some(hwnd), TIMER_START_FADE, DISPLAY_MS, None);
+                        }
                     }
                 }
                 _ => {}
@@ -438,7 +450,6 @@ unsafe extern "system" fn wnd_proc(
                 let _ = KillTimer(Some(hwnd), TIMER_START_FADE);
                 let _ = KillTimer(Some(hwnd), TIMER_FADE);
                 notify_other_toasts_closing(hwnd);
-                let _ = ShowWindow(hwnd, SW_HIDE);
 
                 let (target, wt, rid) = with_toast_mut(|state| {
                     state.clicked = true;
@@ -544,7 +555,9 @@ unsafe extern "system" fn wnd_proc(
         }
 
         x if x == WM_TOAST_PAUSE_TIMER => {
-            let pause = wparam.0 == 1;
+            // Posted pause/resume from different toasts can arrive out of order,
+            // so a resume only counts if the cursor really left every toast.
+            let pause = wparam.0 == 1 || cursor_over_toast();
 
             with_toast_mut(|state| {
                 if pause {
