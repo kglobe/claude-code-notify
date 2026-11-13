@@ -20,7 +20,7 @@ const WINDOW_WIDTH: i32 = 380;
 const PAD: i32 = 16;
 const RADIUS: f32 = 8.0;
 const LOGO_SIZE: i32 = 16;
-const BADGE_SIZE: i32 = 22;
+const BADGE_SIZE: i32 = 20;
 const TEXT_LEFT: i32 = PAD + BADGE_SIZE + 12;
 const CLOSE_BUTTON_SIZE: i32 = 28;
 const CLOSE_BUTTON_MARGIN: i32 = 8;
@@ -38,10 +38,14 @@ fn stack_gap(scale: f32) -> i32 {
     px(STACK_GAP, scale) - 2 * px(SHADOW, scale)
 }
 
-/// Fluent-style palette (0xRRGGBB), picked to keep body text >= 4.5:1 contrast.
+/// Claude warm neutrals (0xRRGGBB); every text colour >= 4.5:1 on bg and bg_hover.
+/// Warn sits at hue ~43° so it doesn't read as the brand orange (~15°) of the logo.
 struct Theme {
     bg: u32,
     bg_hover: u32,
+    /// Warm amber tint so a needs-input card stands out even in peripheral vision.
+    warn_bg: u32,
+    warn_bg_hover: u32,
     border: u32,
     title: u32,
     body: u32,
@@ -53,12 +57,12 @@ struct Theme {
 }
 
 const LIGHT: Theme = Theme {
-    bg: 0xFBFBFB, bg_hover: 0xF5F5F5, border: 0xDDDDDD, title: 0x1B1B1B, body: 0x3D3D3D,
-    muted: 0x6B6B6B, ok: 0x0F7B0F, warn: 0x9D5D00, on_badge: 0xFFFFFF, close_hover: 0xE6E6E6,
+    bg: 0xFAF9F5, bg_hover: 0xEEEDE6, warn_bg: 0xFBF3DD, warn_bg_hover: 0xF3EAD0, border: 0xDEDCD3, title: 0x141413, body: 0x3D3D3A,
+    muted: 0x66655F, ok: 0x0F7B0F, warn: 0x8A6200, on_badge: 0xFFFFFF, close_hover: 0xE8E6DC,
 };
 const DARK: Theme = Theme {
-    bg: 0x2B2B2B, bg_hover: 0x323232, border: 0x454545, title: 0xFFFFFF, body: 0xDADADA,
-    muted: 0xA8A8A8, ok: 0x6CCB5F, warn: 0xFCE100, on_badge: 0x1B1B1B, close_hover: 0x3D3D3D,
+    bg: 0x262624, bg_hover: 0x33332F, warn_bg: 0x2E2A1F, warn_bg_hover: 0x3A3528, border: 0x403F3B,
+    title: 0xFAF9F5, body: 0xD6D4CC, muted: 0xA6A49C, ok: 0x5FB052, warn: 0xE8C15A, on_badge: 0x1F1E1D, close_hover: 0x3A3935,
 };
 
 const TIMER_FADE: usize = 1;
@@ -642,9 +646,10 @@ struct Layout {
 unsafe fn measure_layout(dc: HDC, scale: f32, width: i32, message: &str) -> Layout {
     let s = |v: i32| (v as f32 * scale).round() as i32;
     let header_y = s(12);
-    let title_y = s(38);
-    let status_y = s(64);
-    let message_y = s(86);
+    let title_y = s(36);
+    // Title + status read as one group; message and path step away from it.
+    let status_y = s(60);
+    let message_y = s(84);
 
     let mut message_h = 0;
     if !message.is_empty() {
@@ -659,8 +664,8 @@ unsafe fn measure_layout(dc: HDC, scale: f32, width: i32, message: &str) -> Layo
         message_h = r.bottom.min(s(40)).max(s(20)); // 1-2 lines
     }
 
-    let path_y = if message_h > 0 { message_y + message_h + s(6) } else { message_y };
-    let height = path_y + s(16) + s(14);
+    let path_y = if message_h > 0 { message_y + message_h + s(8) } else { message_y };
+    let height = path_y + s(16) + s(16);
     Layout { header_y, title_y, status_y, message_y, message_h, path_y, height }
 }
 
@@ -707,14 +712,22 @@ unsafe fn render(hwnd: HWND) {
     let badge_cx = (s(PAD) as f32) + badge_r;
     let badge_cy = (layout.title_y + s(13)) as f32;
     let close = close_rect(cw, scale);
-    let bg = if hover { theme.bg_hover } else { theme.bg };
+    let bg = match (input_mode, hover) {
+        (true, true) => theme.warn_bg_hover,
+        (true, false) => theme.warn_bg,
+        (false, true) => theme.bg_hover,
+        (false, false) => theme.bg,
+    };
     for y in 0..h {
         for x in 0..w {
             let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
             let d = sdf_rrect(fx, fy, cx, cy, hw, hh, r);
-            let mut c = lerp_rgb(bg, theme.border, coverage(-(d + bw)));
-            let db = ((fx - of - badge_cx).powi(2) + (fy - of - badge_cy).powi(2)).sqrt() - badge_r;
-            c = lerp_rgb(c, accent, coverage(db));
+            // Only needs-input gets a solid badge and an accent border: it must outrank "done".
+            let mut c = lerp_rgb(bg, if input_mode { accent } else { theme.border }, coverage(-(d + bw)));
+            if input_mode {
+                let db = ((fx - of - badge_cx).powi(2) + (fy - of - badge_cy).powi(2)).sqrt() - badge_r;
+                c = lerp_rgb(c, accent, coverage(db));
+            }
             if hover_close {
                 let dc_ = sdf_rrect(fx - of, fy - of,
                     (close.left + close.right) as f32 / 2.0, (close.top + close.bottom) as f32 / 2.0,
@@ -728,7 +741,8 @@ unsafe fn render(hwnd: HWND) {
     // Pass 2: GDI content on top of the opaque card.
     SetBkMode(dc, TRANSPARENT);
     let _ = SetViewportOrgEx(dc, o, o, None);
-    let logo_x = s(PAD);
+    // Logo shares the badge's centre line; header text shares the body's left edge.
+    let logo_x = s(PAD + (BADGE_SIZE - LOGO_SIZE) / 2);
     let logo_y = layout.header_y + s(2);
     let logo = s(LOGO_SIZE);
     let drawn = !logo_icon.is_invalid()
@@ -737,8 +751,8 @@ unsafe fn render(hwnd: HWND) {
         let _ = DrawIconEx(dc, logo_x, logo_y, icon, logo, logo, 0, None, DI_NORMAL);
     }
 
-    let header = RECT { left: logo_x + logo + s(8), top: layout.header_y, right: close.left - s(4), bottom: layout.header_y + s(20) };
-    draw_text(dc, "Claude Code", header, s(12), 600, "Segoe UI", theme.muted, DT_SINGLELINE | DT_VCENTER);
+    let header = RECT { left: s(TEXT_LEFT), top: layout.header_y, right: close.left - s(4), bottom: layout.header_y + s(20) };
+    draw_text(dc, "Claude Code", header, s(12), 400, "Segoe UI", theme.muted, DT_SINGLELINE | DT_VCENTER);
     draw_text(dc, &time, header, s(12), 400, "Segoe UI", theme.muted, DT_SINGLELINE | DT_VCENTER | DT_RIGHT);
 
     // Close glyph (Fluent "ChromeClose")
@@ -751,9 +765,9 @@ unsafe fn render(hwnd: HWND) {
         right: (badge_cx + badge_r).ceil() as i32, bottom: (badge_cy + badge_r).ceil() as i32,
     };
     if input_mode {
-        draw_text(dc, "!", badge, s(15), 800, "Segoe UI", theme.on_badge, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+        draw_text(dc, "!", badge, s(14), 800, "Segoe UI", theme.on_badge, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
     } else {
-        draw_text(dc, "\u{E73E}", badge, s(12), 700, "Segoe Fluent Icons", theme.on_badge, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+        draw_text(dc, "\u{E73E}", badge, s(16), 700, "Segoe Fluent Icons", accent, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
     }
 
     let text_left = s(TEXT_LEFT);
@@ -761,7 +775,8 @@ unsafe fn render(hwnd: HWND) {
     draw_text(dc, &title, RECT { left: text_left, top: layout.title_y, right: text_right, bottom: layout.title_y + s(26) },
         s(17), 600, "Segoe UI", theme.title, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
     draw_text(dc, &status, RECT { left: text_left, top: layout.status_y, right: text_right, bottom: layout.status_y + s(20) },
-        s(13), 600, "Segoe UI", accent, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        // "Done" stays quiet: the check mark carries the colour, the word does not.
+        s(13), 600, "Segoe UI", if input_mode { accent } else { theme.body }, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
     if layout.message_h > 0 {
         draw_text(dc, &message,
             RECT { left: text_left, top: layout.message_y, right: text_right, bottom: layout.message_y + layout.message_h },
