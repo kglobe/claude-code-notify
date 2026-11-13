@@ -383,6 +383,14 @@ fn animate_to_position(hwnd: HWND) {
 
     if done {
         unsafe { let _ = KillTimer(Some(hwnd), TIMER_REPOSITION); }
+        // Sliding under a still cursor sends no mouse input; replay it so the hover pause kicks in.
+        let mut pt = POINT::default();
+        unsafe {
+            if GetCursorPos(&mut pt).is_ok() && WindowFromPoint(pt) == hwnd && ScreenToClient(hwnd, &mut pt).as_bool() {
+                let lparam = ((pt.y as u16 as isize) << 16) | (pt.x as u16 as isize);
+                let _ = SendMessageW(hwnd, WM_MOUSEMOVE, Some(WPARAM(0)), Some(LPARAM(lparam)));
+            }
+        }
     }
 }
 
