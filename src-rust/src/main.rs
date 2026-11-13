@@ -306,7 +306,7 @@ fn main() {
         }
     }
 
-    let args = cli::parse_args();
+    let args = cli::parse_args(std::env::args());
     log::init(args.debug);
 
     let exit_code = match args.mode {

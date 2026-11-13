@@ -10,7 +10,7 @@ use windows::core::PWSTR;
 /// Spawn a detached child process with the given command line.
 /// Returns true on success.
 pub fn spawn_detached(cmd_line: &str) -> bool {
-    let mut cmd_wide: Vec<u16> = cmd_line.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut cmd_wide = crate::util::encode_wide(cmd_line);
 
     let si = STARTUPINFOW {
         cb: std::mem::size_of::<STARTUPINFOW>() as u32,

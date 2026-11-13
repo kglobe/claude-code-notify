@@ -7,24 +7,13 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::IsWindow;
 
 /// Data stored in and loaded from the state file.
+#[derive(Default)]
 pub struct State {
     pub target_hwnd: HWND,
     pub wt_hwnd: HWND,
     pub wt_runtime_id: String,
     pub icon_path: String,
     pub user_prompt: String,
-}
-
-impl Default for State {
-    fn default() -> Self {
-        Self {
-            target_hwnd: HWND::default(),
-            wt_hwnd: HWND::default(),
-            wt_runtime_id: String::new(),
-            icon_path: String::new(),
-            user_prompt: String::new(),
-        }
-    }
 }
 
 /// Get the state file path for a session.

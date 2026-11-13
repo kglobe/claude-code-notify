@@ -215,10 +215,7 @@ fn enum_other_toasts() -> Vec<ToastInfo> {
         if hwnd == my_hwnd {
             return TRUE;
         }
-        let mut class_buf = [0u16; 256];
-        let len = GetClassNameW(hwnd, &mut class_buf);
-        let class = String::from_utf16_lossy(&class_buf[..len as usize]);
-        if class == TOAST_CLASS_NAME && IsWindowVisible(hwnd).as_bool() {
+        if crate::util::get_class_name(hwnd) == TOAST_CLASS_NAME && IsWindowVisible(hwnd).as_bool() {
             let mut rect = RECT::default();
             let _ = GetWindowRect(hwnd, &mut rect);
             toasts.push(ToastInfo { hwnd, rect });
@@ -240,7 +237,7 @@ fn calculate_position(work_area: &RECT, taskbar_edge: u32, width: i32, height: i
     let other_toasts = enum_other_toasts();
 
     // X position (margin keeps the card off the screen edge, like system toasts)
-    let x = if taskbar_edge == ABE_LEFT as u32 {
+    let x = if taskbar_edge == ABE_LEFT {
         work_area.left + margin
     } else {
         work_area.right - width - margin
@@ -249,13 +246,13 @@ fn calculate_position(work_area: &RECT, taskbar_edge: u32, width: i32, height: i
     // Y position
     let y = if other_toasts.is_empty() {
         // First toast
-        if taskbar_edge == ABE_TOP as u32 {
+        if taskbar_edge == ABE_TOP {
             work_area.top + margin
         } else {
             work_area.bottom - height - margin
         }
     } else {
-        if taskbar_edge == ABE_TOP as u32 {
+        if taskbar_edge == ABE_TOP {
             // Stack below: find lowest bottom
             let lowest_bottom = other_toasts.iter().map(|t| t.rect.bottom).max().unwrap_or(work_area.top);
             lowest_bottom + gap
@@ -511,7 +508,7 @@ unsafe extern "system" fn wnd_proc(
             let closed_height = lparam.0 as i32;
             with_toast_mut(|state| {
                 let shift = closed_height + stack_gap(state.scale);
-                if state.taskbar_edge == ABE_TOP as u32 {
+                if state.taskbar_edge == ABE_TOP {
                     // Top taskbar: if we're below the closed toast, move up
                     if my_rect.top > closed_toast_y {
                         state.target_y = my_rect.top - shift;
@@ -957,7 +954,7 @@ fn detect_taskbar_edge() -> u32 {
     if result != 0 {
         abd.uEdge
     } else {
-        ABE_BOTTOM as u32
+        ABE_BOTTOM
     }
 }
 

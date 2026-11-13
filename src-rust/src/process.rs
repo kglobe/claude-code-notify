@@ -141,7 +141,7 @@ fn get_process_exe_path(pid: u32) -> String {
 
 fn file_name_without_ext(path: &str) -> String {
     let name = path
-        .rsplit(|c| c == '\\' || c == '/')
+        .rsplit(['\\', '/'])
         .next()
         .unwrap_or(path);
     match name.rfind('.') {
