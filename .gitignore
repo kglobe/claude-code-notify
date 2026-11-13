@@ -9,8 +9,12 @@
 # Rust build output
 src-rust/target/
 
-# Local settings
-.claude/
+# Local settings (project skills are tracked)
+.claude/*
+!.claude/skills/
+
+# Verify skill output
+verify-evidence/
 
 # Temp files
 *.tmp
