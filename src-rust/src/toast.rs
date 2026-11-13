@@ -287,6 +287,8 @@ fn notify_other_toasts_closing(my_hwnd: HWND) {
     let mut my_rect = RECT::default();
     unsafe { let _ = GetWindowRect(my_hwnd, &mut my_rect); }
     let others = enum_other_toasts();
+    // A hovered toast that closes never gets WM_MOUSELEAVE, so it must send the resume itself.
+    let was_hovered = with_toast(|s| s.mouse_inside);
     // Hide before posting: receivers run in other processes and may handle the
     // message at once, so they must already see this toast gone.
     unsafe { let _ = ShowWindow(my_hwnd, SW_HIDE); }
@@ -299,6 +301,9 @@ fn notify_other_toasts_closing(my_hwnd: HWND) {
                 WPARAM(my_rect.top as usize),
                 LPARAM((my_rect.bottom - my_rect.top) as isize),
             );
+            if was_hovered {
+                let _ = PostMessageW(Some(t.hwnd), WM_TOAST_PAUSE_TIMER, WPARAM(0), LPARAM(0));
+            }
         }
     }
 }
