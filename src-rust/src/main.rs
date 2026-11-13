@@ -50,16 +50,15 @@ fn run_save_mode(immediate_hwnd: HWND) -> i32 {
     debug_log!("Session ID: {}", session_id);
     debug_log!("Prompt: {}", prompt);
 
-    // UserPromptSubmit also fires for prompts the user didn't type at that moment
-    // (background task notifications, queued messages), when another app may be in front.
-    // Keep the window saved by the session's first prompt while it still exists.
-    let (hwnd, runtime_id, caller_path) = match state::saved_target(&session_id) {
-        Some(saved) => {
-            debug_log!("Keeping saved target {:?}", saved.0);
-            saved
-        }
-        None => capture_target(immediate_hwnd),
-    };
+    // UserPromptSubmit also fires for prompts Claude Code injects (task notifications,
+    // subagent hand-backs) while another app may be in front. Keep the last typed prompt's
+    // window and text; a typed prompt always recaptures, so a bad capture never sticks.
+    if is_system_prompt(&prompt) && state::load_state(&session_id).target_hwnd != HWND::default() {
+        debug_log!("System-generated prompt, keeping saved state");
+        return 0;
+    }
+
+    let (hwnd, runtime_id, caller_path) = capture_target(immediate_hwnd);
     debug_log!("Caller exe path: {}", caller_path);
 
     state::save_state(&session_id, hwnd, &runtime_id, &caller_path, &prompt);
@@ -298,6 +297,11 @@ fn sanitize_message(msg: &str) -> String {
     }
 }
 
+/// Prompts Claude Code injects itself (`<task-notification>`, `<agent-message …>`) rather than ones the user typed.
+fn is_system_prompt(prompt: &str) -> bool {
+    prompt.trim_start().starts_with('<')
+}
+
 fn main() {
     // CRITICAL: Capture foreground window IMMEDIATELY (SPEC 3.1)
     let immediate_hwnd = unsafe { GetForegroundWindow() };
@@ -328,4 +332,17 @@ fn main() {
         CoUninitialize();
     }
     std::process::exit(exit_code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_system_prompt;
+
+    #[test]
+    fn system_prompts_start_with_a_tag() {
+        assert!(is_system_prompt("<task-notification>\n<task-id>x</task-id>"));
+        assert!(is_system_prompt("  <agent-message from=\"a\">\n[Subagent hand-back]"));
+        assert!(!is_system_prompt("我如果已經在Herdr 點toast 會亂跳程式"));
+        assert!(!is_system_prompt(""));
+    }
 }
