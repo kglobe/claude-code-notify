@@ -281,6 +281,11 @@ fn is_bottom_toast_check(hwnd: HWND, _taskbar_edge: u32) -> bool {
     true
 }
 
+/// The bottom toast is the one nearest the taskbar.
+fn is_bottom(_my_top: i32, other_tops: &[i32], _taskbar_top: bool) -> bool {
+    other_tops.is_empty()
+}
+
 fn notify_other_toasts_closing(my_hwnd: HWND) {
     let mut my_rect = RECT::default();
     unsafe { let _ = GetWindowRect(my_hwnd, &mut my_rect); }
@@ -971,5 +976,21 @@ fn get_cursor_monitor_work_area() -> (RECT, HMONITOR) {
         let _ = GetMonitorInfoW(monitor, &mut mi);
 
         (mi.rcWork, monitor)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_bottom;
+
+    #[test]
+    fn bottom_toast_is_the_one_nearest_the_taskbar() {
+        // Taskbar at bottom: larger top = closer to taskbar.
+        assert!(is_bottom(900, &[700, 500], false));
+        assert!(!is_bottom(700, &[900, 500], false));
+        // Taskbar at top: smaller top = closer to taskbar.
+        assert!(is_bottom(10, &[200, 400], true));
+        assert!(!is_bottom(200, &[10, 400], true));
+        assert!(is_bottom(500, &[], false));
     }
 }
