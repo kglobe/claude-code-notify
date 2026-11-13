@@ -270,7 +270,7 @@ fn run_notify_show_mode(args: &cli::Args) -> i32 {
 }
 
 /// Forward the hook's `cwd` to the display process.
-fn push_cwd_arg(cmd: &mut String, input: &str) {
+fn push_cwd_arg(cmd: &mut String, input: &serde_json::Value) {
     let cwd = json::extract_string(input, "cwd");
     if !cwd.is_empty() {
         cmd.push_str(&format!(" --cwd {}", spawn::quote_arg(&cwd)));
