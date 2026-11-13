@@ -53,13 +53,23 @@ fn run_save_mode(immediate_hwnd: HWND) -> i32 {
     // UserPromptSubmit also fires for prompts the user didn't type at that moment
     // (background task notifications, queued messages), when another app may be in front.
     // Keep the window saved by the session's first prompt while it still exists.
-    let caller_path = process::find_caller_exe_path();
-    if let Some((hwnd, runtime_id)) = state::saved_target(&session_id) {
-        debug_log!("Keeping saved target {:?}", hwnd);
-        state::save_state(&session_id, hwnd, &runtime_id, &caller_path, &prompt);
-        return 0;
-    }
+    let (hwnd, runtime_id, caller_path) = match state::saved_target(&session_id) {
+        Some(saved) => {
+            debug_log!("Keeping saved target {:?}", saved.0);
+            saved
+        }
+        None => capture_target(immediate_hwnd),
+    };
+    debug_log!("Caller exe path: {}", caller_path);
 
+    state::save_state(&session_id, hwnd, &runtime_id, &caller_path, &prompt);
+    debug_log!("State saved to {:?}", state::state_file_path(&session_id));
+
+    0
+}
+
+/// Foreground window, its WT tab RuntimeId, and the caller exe path for the icon.
+fn capture_target(immediate_hwnd: HWND) -> (HWND, String, String) {
     // Use immediate_hwnd, fall back to GetForegroundWindow if invalid (SPEC 3.2)
     let hwnd = if !immediate_hwnd.is_invalid()
         && immediate_hwnd != HWND::default()
@@ -84,13 +94,7 @@ fn run_save_mode(immediate_hwnd: HWND) -> i32 {
         debug_log!("RuntimeId: {}", runtime_id);
     }
 
-    debug_log!("Caller exe path: {}", caller_path);
-
-    // Save state
-    state::save_state(&session_id, hwnd, &runtime_id, &caller_path, &prompt);
-    debug_log!("State saved to {:?}", state::state_file_path(&session_id));
-
-    0
+    (hwnd, runtime_id, process::find_caller_exe_path())
 }
 
 fn run_notify_mode(debug: bool) -> i32 {
