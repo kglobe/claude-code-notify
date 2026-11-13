@@ -51,9 +51,9 @@ fn run_save_mode(immediate_hwnd: HWND) -> i32 {
     debug_log!("Prompt: {}", prompt);
 
     // UserPromptSubmit also fires for prompts Claude Code injects (task notifications,
-    // subagent hand-backs) while another app may be in front. Keep the last typed prompt's
-    // window and text; a typed prompt always recaptures, so a bad capture never sticks.
-    if is_system_prompt(&prompt) && state::load_state(&session_id).target_hwnd != HWND::default() {
+    // subagent hand-backs) while another app may be in front. Never save on those, so the
+    // last typed prompt's window and text stay; a typed prompt always recaptures.
+    if is_system_prompt(&prompt) {
         debug_log!("System-generated prompt, keeping saved state");
         return 0;
     }
@@ -298,9 +298,10 @@ fn sanitize_message(msg: &str) -> String {
 }
 
 /// Prompts Claude Code injects itself (`<task-notification>`, `<agent-message …>`) rather than ones the user typed.
-// shortcut: guesses from the text; a typed prompt starting with `<` keeps the previous window. Use a hook JSON source field if Claude Code adds one.
+// shortcut: matches known tags only; a new injected format gets saved like a typed prompt. Use a hook JSON source field if Claude Code adds one.
 fn is_system_prompt(prompt: &str) -> bool {
-    prompt.trim_start().starts_with('<')
+    let p = prompt.trim_start();
+    p.starts_with("<task-notification>") || p.starts_with("<agent-message ")
 }
 
 fn main() {
@@ -340,10 +341,12 @@ mod tests {
     use super::is_system_prompt;
 
     #[test]
-    fn system_prompts_start_with_a_tag() {
+    fn only_known_injected_tags_are_system_prompts() {
         assert!(is_system_prompt("<task-notification>\n<task-id>x</task-id>"));
         assert!(is_system_prompt("  <agent-message from=\"a\">\n[Subagent hand-back]"));
         assert!(!is_system_prompt("我如果已經在Herdr 點toast 會亂跳程式"));
         assert!(!is_system_prompt(""));
+        assert!(!is_system_prompt("<div>Why is this overflowing?</div>"));
+        assert!(!is_system_prompt("<https://example.com/api> returns 500"));
     }
 }
