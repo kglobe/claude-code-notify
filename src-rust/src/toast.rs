@@ -266,24 +266,18 @@ fn calculate_position(work_area: &RECT, taskbar_edge: u32, width: i32, height: i
     (x, y)
 }
 
-fn is_bottom_toast_check(hwnd: HWND, _taskbar_edge: u32) -> bool {
-    let other_toasts = enum_other_toasts();
-    if other_toasts.is_empty() {
-        return true;
-    }
-
-    // Bottom toast = the one with the lowest HWND value (created earliest, closest to taskbar)
-    for t in &other_toasts {
-        if (t.hwnd.0 as usize) < (hwnd.0 as usize) {
-            return false;
-        }
-    }
-    true
+fn is_bottom_toast_check(hwnd: HWND, taskbar_edge: u32) -> bool {
+    let mut rect = RECT::default();
+    unsafe { let _ = GetWindowRect(hwnd, &mut rect); }
+    let other_tops: Vec<i32> = enum_other_toasts().iter().map(|t| t.rect.top).collect();
+    is_bottom(rect.top, &other_tops, taskbar_edge == ABE_TOP)
 }
 
 /// The bottom toast is the one nearest the taskbar.
-fn is_bottom(_my_top: i32, other_tops: &[i32], _taskbar_top: bool) -> bool {
-    other_tops.is_empty()
+fn is_bottom(my_top: i32, other_tops: &[i32], taskbar_top: bool) -> bool {
+    other_tops
+        .iter()
+        .all(|&t| if taskbar_top { t > my_top } else { t < my_top })
 }
 
 fn notify_other_toasts_closing(my_hwnd: HWND) {
